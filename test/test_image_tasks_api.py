@@ -73,7 +73,13 @@ class ImageTasksApiTests(unittest.TestCase):
         response = self.client.post(
             "/api/image-tasks/generations",
             headers=AUTH_HEADERS,
-            json={"client_task_id": "task-1", "prompt": "cat", "model": "gpt-image-2"},
+            json={
+                "client_task_id": "task-1",
+                "prompt": "cat",
+                "model": "agnes-image-2.1-flash",
+                "size": "3K",
+                "ratio": "21:9",
+            },
         )
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -81,6 +87,9 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(payload["id"], "task-1")
         self.assertEqual(payload["status"], "success")
         self.assertEqual(len(self.fake_service.generation_calls), 1)
+        submitted = self.fake_service.generation_calls[0][1]
+        self.assertEqual(submitted["size"], "3K")
+        self.assertEqual(submitted["ratio"], "21:9")
 
     def test_create_edit_task_accepts_multiple_images(self):
         """测试图片编辑任务接口支持多个上传图片。"""
@@ -99,6 +108,21 @@ class ImageTasksApiTests(unittest.TestCase):
         self.assertEqual(len(self.fake_service.edit_calls), 1)
         images = self.fake_service.edit_calls[0][1]["images"]
         self.assertEqual(len(images), 2)
+
+    def test_create_edit_task_rejects_too_many_images(self):
+        response = self.client.post(
+            "/api/image-tasks/edits",
+            headers=AUTH_HEADERS,
+            data={"client_task_id": "edit-many", "prompt": "edit"},
+            files=[
+                ("image", (f"{index}.png", b"image", "image/png"))
+                for index in range(11)
+            ],
+        )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("up to 10", response.text)
+        self.assertEqual(self.fake_service.edit_calls, [])
 
     def test_create_edit_task_accepts_image_url(self):
         """测试图片编辑任务接口支持表单 image_url 引用。"""

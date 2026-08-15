@@ -55,6 +55,8 @@ const IMAGE_MODEL_STORAGE_KEY = "chatgpt2api:image_last_model";
 const IMAGE_COUNT_STORAGE_KEY = "chatgpt2api:image_last_count";
 const SCROLL_POSITIONS_STORAGE_KEY = "chatgpt2api:image_scroll_positions";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
+const CHATGPT_IMAGE_MODEL = "gpt-image-2";
+const AGNES_IMAGE_MODEL = "agnes-image-2.1-flash";
 
 function loadScrollPositions(): Map<string, number> {
   if (typeof window === "undefined") return new Map();
@@ -117,7 +119,13 @@ function formatConversationTime(value: string) {
 
 function formatAvailableQuota(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status !== "禁用");
-  return String(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+  const localQuota = availableAccounts
+    .filter((account) => account.quota_mode !== "external")
+    .reduce((sum, account) => sum + Math.max(0, account.quota), 0);
+  const hasExternal = availableAccounts.some(
+    (account) => account.quota_mode === "external" && account.status === "正常",
+  );
+  return hasExternal ? (localQuota > 0 ? `${localQuota} + 外部` : "外部") : String(localQuota);
 }
 
 function createId() {
@@ -156,6 +164,24 @@ function normalizeStoredImageModel(value: string | null, availableModels: ImageM
     return normalized;
   }
   return availableModels[0] || "gpt-image-2";
+}
+
+function isAgnesImageModel(model: ImageModel) {
+  return model.toLowerCase() === "agnes-image-2.1-flash";
+}
+
+function requestSizeForTurn(turn: ImageTurn) {
+  if (!isAgnesImageModel(turn.model)) return turn.size;
+  const tier = String(turn.tier || "1k").toUpperCase();
+  return ["1K", "2K", "3K", "4K"].includes(tier) ? tier : "1K";
+}
+
+function requestRatioForTurn(turn: ImageTurn) {
+  return turn.ratio === "auto" ? undefined : turn.ratio;
+}
+
+function requestQualityForTurn(turn: ImageTurn) {
+  return isAgnesImageModel(turn.model) ? "auto" : turn.quality;
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -1170,17 +1196,21 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setLightboxOpen(true);
   }, []);
 
-  const createLoadingImages = (turnId: string, count: number) =>
-    Array.from({ length: count }, (_, index) => {
-      const imageId = `${turnId}-${index}`;
-      return {
-        id: imageId,
-        taskId: imageId,
-        status: "loading" as const,
-      };
+  const createLoadingImages = (turnId: string, count: number, models: ImageModel[] = [imageModel]) =>
+    models.flatMap((model) => {
+      const channel = isAgnesImageModel(model) ? "agnes" : "chatgpt";
+      return Array.from({ length: count }, (_, index) => {
+        const imageId = `${turnId}-${channel}-${index}`;
+        return {
+          id: imageId,
+          taskId: imageId,
+          model,
+          channel: channel as "chatgpt" | "agnes",
+          status: "loading" as const,
+        };
+      });
     });
 
-  /* eslint-disable react-hooks/preserve-manual-memoization */
   const runConversationQueue = useCallback(
     async (conversationId: string) => {
       if (activeConversationQueueIds.has(conversationId)) {
@@ -1236,15 +1266,47 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         }
 
         const pendingImages = activeTurn.images.filter((image) => image.status === "loading");
-        const submitted = await Promise.all(
+        const submissionResults = await Promise.allSettled(
           pendingImages.map((image) => {
             const taskId = image.taskId || image.id;
+            const requestTurn = image.model ? { ...activeTurn, model: image.model } : activeTurn;
             return activeTurn.mode === "edit"
-              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
+              ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, requestTurn.model, requestSizeForTurn(requestTurn), requestQualityForTurn(requestTurn), requestRatioForTurn(requestTurn))
+              : createImageGenerationTask(taskId, activeTurn.prompt, requestTurn.model, requestSizeForTurn(requestTurn), requestQualityForTurn(requestTurn), requestRatioForTurn(requestTurn));
           }),
         );
-        await applyTasks(submitted);
+        const submitted: ImageTask[] = [];
+        const submissionErrors: Array<{ imageId: string; message: string }> = [];
+        submissionResults.forEach((result, index) => {
+          const image = pendingImages[index];
+          if (result.status === "fulfilled") {
+            submitted.push(result.value);
+          } else {
+            submissionErrors.push({
+              imageId: image.id,
+              message: result.reason instanceof Error ? result.reason.message : "提交生图任务失败",
+            });
+          }
+        });
+        if (submitted.length > 0) {
+          await applyTasks(submitted);
+        }
+        if (submissionErrors.length > 0) {
+          const errorMap = new Map(submissionErrors.map((item) => [item.imageId, item.message]));
+          await updateConversation(conversationId, (current) => {
+            const conversation = current ?? snapshot;
+            const turns = conversation.turns.map((turn) => {
+              if (turn.id !== activeTurn.id) return turn;
+              const images = turn.images.map((image) => {
+                const message = errorMap.get(image.id);
+                return message ? { ...image, status: "error" as const, error: message } : image;
+              });
+              const derived = deriveTurnStatus({ ...turn, images });
+              return { ...turn, ...derived, images };
+            });
+            return { ...conversation, updatedAt: new Date().toISOString(), turns };
+          });
+        }
 
         let consecutiveErrors = 0;
         const retryingTaskIdsRef = new Set<string>();
@@ -1289,15 +1351,47 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               const missingImages = latestTurn.images.filter(
                 (image) => image.status === "loading" && image.taskId && taskList.missing_ids.includes(image.taskId),
               );
-              const resubmitted = await Promise.all(
+              const retryResults = await Promise.allSettled(
                 missingImages.map((image) =>
-                  activeTurn.mode === "edit"
-                    ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-                    : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality),
+                  (() => {
+                    const requestTurn = image.model ? { ...activeTurn, model: image.model } : activeTurn;
+                    return activeTurn.mode === "edit"
+                      ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, requestTurn.model, requestSizeForTurn(requestTurn), requestQualityForTurn(requestTurn), requestRatioForTurn(requestTurn))
+                      : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, requestTurn.model, requestSizeForTurn(requestTurn), requestQualityForTurn(requestTurn), requestRatioForTurn(requestTurn));
+                  })(),
                 ),
               );
+              const resubmitted: ImageTask[] = [];
+              const retryErrors: Array<{ imageId: string; message: string }> = [];
+              retryResults.forEach((result, index) => {
+                const image = missingImages[index];
+                if (result.status === "fulfilled") {
+                  resubmitted.push(result.value);
+                } else {
+                  retryErrors.push({
+                    imageId: image.id,
+                    message: result.reason instanceof Error ? result.reason.message : "重新提交生图任务失败",
+                  });
+                }
+              });
               if (resubmitted.length > 0) {
                 await applyTasks(resubmitted);
+              }
+              if (retryErrors.length > 0) {
+                const errorMap = new Map(retryErrors.map((item) => [item.imageId, item.message]));
+                await updateConversation(conversationId, (current) => {
+                  const conversation = current ?? snapshot;
+                  const turns = conversation.turns.map((turn) => {
+                    if (turn.id !== activeTurn.id) return turn;
+                    const images = turn.images.map((image) => {
+                      const message = errorMap.get(image.id);
+                      return message ? { ...image, status: "error" as const, error: message } : image;
+                    });
+                    const derived = deriveTurnStatus({ ...turn, images });
+                    return { ...turn, ...derived, images };
+                  });
+                  return { ...conversation, updatedAt: new Date().toISOString(), turns };
+                });
               }
             }
           } catch (pollError) {
@@ -1349,8 +1443,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     },
     [loadQuota, updateConversation],
   );
-  /* eslint-enable react-hooks/preserve-manual-memoization */
-
   const handleRegenerateTurn = useCallback(
     async (conversationId: string, turnId: string) => {
       const conversation = conversationsRef.current.find((item) => item.id === conversationId);
@@ -1362,10 +1454,15 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       const now = new Date().toISOString();
       const nextTurnId = createId();
       const count = Math.max(1, sourceTurn.count || sourceTurn.images.length || 1);
+      const models = sourceTurn.models?.length
+        ? sourceTurn.models
+        : Array.from(new Set(sourceTurn.images.map((image) => image.model).filter(Boolean) as ImageModel[]));
+      const batchModels = models.length > 0 ? models : [sourceTurn.model];
       const nextTurn: ImageTurn = {
         id: nextTurnId,
         prompt: sourceTurn.prompt,
         model: sourceTurn.model,
+        models: batchModels,
         mode: sourceTurn.mode,
         referenceImages: sourceTurn.referenceImages,
         count,
@@ -1373,7 +1470,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         ratio: sourceTurn.ratio,
         tier: sourceTurn.tier,
         quality: sourceTurn.quality,
-        images: createLoadingImages(nextTurnId, count),
+        images: createLoadingImages(nextTurnId, count, batchModels),
         createdAt: now,
         status: "queued",
       };
@@ -1416,6 +1513,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
               ? {
                   id: retryImageId,
                   taskId: retryImageId,
+                  model: image.model,
+                  channel: image.channel,
                   status: "loading" as const,
                 }
               : image,
@@ -1560,10 +1659,13 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const conversationId = targetConversation?.id ?? createId();
     const turnId = createId();
     const imageSize = `${imageWidth || 1024}x${imageHeight || 1024}`;
+    const primaryModel = isAgnesImageModel(imageModel) ? CHATGPT_IMAGE_MODEL : imageModel;
+    const batchModels = Array.from(new Set<ImageModel>([primaryModel, AGNES_IMAGE_MODEL]));
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,
-      model: imageModel,
+      model: batchModels[0],
+      models: batchModels,
       mode: effectiveImageMode,
       referenceImages: effectiveImageMode === "edit" ? referenceImages : [],
       count: parsedCount,
@@ -1571,7 +1673,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       ratio: imageRatio,
       tier: imageTier,
       quality: imageQuality,
-      images: createLoadingImages(turnId, parsedCount),
+      images: createLoadingImages(turnId, parsedCount, batchModels),
       createdAt: now,
       status: "queued",
     };

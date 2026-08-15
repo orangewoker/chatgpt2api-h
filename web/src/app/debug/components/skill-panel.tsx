@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Copy, Download } from "lucide-react";
 import { toast } from "sonner";
 
@@ -9,13 +9,16 @@ import webConfig from "@/constants/common-env";
 import { fetchSettingsConfig } from "@/lib/api";
 import { getStoredAuthSession } from "@/store/auth";
 
+const subscribeToBrowserOrigin = () => () => undefined;
+const getBrowserOrigin = () => window.location.origin;
+const getServerOrigin = () => "";
+
 export function SkillPanel() {
-  const [browserBaseUrl, setBrowserBaseUrl] = useState("");
+  const browserBaseUrl = useSyncExternalStore(subscribeToBrowserOrigin, getBrowserOrigin, getServerOrigin);
   const [configuredBaseUrl, setConfiguredBaseUrl] = useState("");
   const [authKey, setAuthKey] = useState("");
 
   useEffect(() => {
-    setBrowserBaseUrl(window.location.origin);
     void fetchSettingsConfig().then((data) => setConfiguredBaseUrl(String(data.config.base_url || "").replace(/\/$/, ""))).catch(() => undefined);
     void getStoredAuthSession().then((session) => setAuthKey(session?.key || ""));
   }, []);

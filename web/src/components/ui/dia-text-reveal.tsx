@@ -171,15 +171,17 @@ export function DiaTextReveal({
 
   const isInView = useInView(spanRef, { once, amount: 0.1 })
 
-  optsRef.current = {
-    colors,
-    textColor,
-    duration,
-    delay,
-    repeat,
-    repeatDelay,
-    texts,
-  }
+  useEffect(() => {
+    optsRef.current = {
+      colors,
+      textColor,
+      duration,
+      delay,
+      repeat,
+      repeatDelay,
+      texts,
+    }
+  }, [colors, textColor, duration, delay, repeat, repeatDelay, texts])
 
   useEffect(() => {
     const el = spanRef.current

@@ -119,21 +119,58 @@ class AccountService:
 
     def _load_accounts(self) -> dict[str, dict]:
         accounts = self.storage.load_accounts()
-        return {
-            normalized["access_token"]: normalized
-            for item in accounts
-            if (normalized := self._normalize_account(item)) is not None
-        }
+        normalized_accounts: dict[str, dict] = {}
+        for item in accounts:
+            try:
+                normalized = self._normalize_account(item)
+            except ValueError:
+                continue
+            if normalized is not None:
+                normalized_accounts[normalized["access_token"]] = normalized
+        return normalized_accounts
 
     def _save_accounts(self) -> None:
         self.storage.save_accounts(list(self._accounts.values()))
 
     @staticmethod
-    def _is_image_account_available(account: dict) -> bool:
+    def _normalize_provider(value: object) -> str:
+        provider = str(value or "").strip().lower().replace("-", "_")
+        if provider in {"", "chatgpt", "chatgpt_web", "openai"}:
+            return "chatgpt"
+        if provider in {"agnes", "agnes_ai"}:
+            return "agnes"
+        raise ValueError(f"unsupported account provider: {provider}")
+
+    @classmethod
+    def account_provider(cls, account: dict | None) -> str:
+        if not isinstance(account, dict):
+            return "chatgpt"
+        explicit = str(account.get("provider") or "").strip()
+        if explicit:
+            return cls._normalize_provider(explicit)
+        source = str(account.get("source_type") or "").strip().lower()
+        account_type = cls._normalize_account_type(account.get("type"))
+        if source in {"agnes", "agnes_ai"} or account_type == "Agnes":
+            return "agnes"
+        return "chatgpt"
+
+    @classmethod
+    def is_external_image_account(cls, account: dict | None) -> bool:
+        return cls.account_provider(account) != "chatgpt"
+
+    @classmethod
+    def _is_image_account_available(cls, account: dict) -> bool:
         if not isinstance(account, dict):
             return False
-        if account.get("status") in {"禁用", "限流", "异常"}:
+        status = account.get("status")
+        if status in {"禁用", "异常"}:
             return False
+        if status == "限流":
+            restore_at = cls._parse_time(account.get("restore_at"))
+            if not (cls.is_external_image_account(account) and restore_at and restore_at <= datetime.now(timezone.utc)):
+                return False
+        if str(account.get("quota_mode") or "").strip().lower() == "external":
+            return cls.is_external_image_account(account)
         return int(account.get("quota") or 0) > 0
 
     @classmethod
@@ -151,6 +188,12 @@ class AccountService:
         if not source_type:
             return True
         return cls._normalize_source_type(account.get("source_type")) == cls._normalize_source_type(source_type)
+
+    @classmethod
+    def _account_matches_provider(cls, account: dict, provider: str | None = None) -> bool:
+        if not provider:
+            return True
+        return cls.account_provider(account) == cls._normalize_provider(provider)
 
     @classmethod
     def _account_matches_any_plan_type(cls, account: dict, plan_types: set[str] | tuple[str, ...] | None = None) -> bool:
@@ -183,6 +226,7 @@ class AccountService:
             "team": "Team",
             "business": "Team",
             "enterprise": "Enterprise",
+            "agnes": "Agnes",
         }
         return aliases.get(compact) or aliases.get(key) or raw
 
@@ -216,15 +260,21 @@ class AccountService:
             normalized["export_type"] = "codex"
             normalized.pop("type", None)
         normalized["type"] = normalized.get("type") or "free"
+        provider = self.account_provider(normalized)
+        normalized["provider"] = provider
+        if provider == "agnes":
+            normalized["type"] = "Agnes"
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
+        normalized["quota_mode"] = "external" if provider == "agnes" else str(normalized.get("quota_mode") or "local")
+        normalized["label"] = str(normalized.get("label") or "").strip() or None
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
         normalized["proxy"] = str(normalized.get("proxy") or "").strip()
         source_type = normalized.get("source_type")
         if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
             source_type = "codex"
-        normalized["source_type"] = self._normalize_source_type(source_type)
+        normalized["source_type"] = "api_key" if provider == "agnes" else self._normalize_source_type(source_type)
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
@@ -442,6 +492,8 @@ class AccountService:
             if not account:
                 return access_token
             active_token = str(account.get("access_token") or resolved_token or access_token)
+            if self.is_external_image_account(account):
+                return active_token
             if not self._token_needs_refresh(active_token, force=force):
                 return active_token
             refresh_token = str(account.get("refresh_token") or "").strip()
@@ -838,7 +890,8 @@ class AccountService:
             return [
                 token
                 for account in self._accounts.values()
-                if str(account.get("refresh_token") or "").strip()
+                if not self.is_external_image_account(account)
+                and str(account.get("refresh_token") or "").strip()
                 and (token := str(account.get("access_token") or "").strip())
                 and self._token_needs_refresh(token)
             ]
@@ -848,6 +901,8 @@ class AccountService:
         due_items: list[tuple[datetime, str]] = []
         with self._lock:
             for account in self._accounts.values():
+                if self.is_external_image_account(account):
+                    continue
                 due_at = self._refresh_token_keepalive_due_at(account, now)
                 token = str(account.get("access_token") or "").strip()
                 if due_at is not None and token:
@@ -892,6 +947,7 @@ class AccountService:
             plan_type: str | None = None,
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
+            provider: str | None = None,
     ) -> list[str]:
         excluded = set(excluded_tokens or set())
         return [
@@ -901,6 +957,7 @@ class AccountService:
                and self._account_matches_plan_type(item, plan_type)
                and self._account_matches_any_plan_type(item, plan_types)
                and self._account_matches_source_type(item, source_type)
+               and self._account_matches_provider(item, provider)
                and (token := item.get("access_token") or "")
                and token not in excluded
         ]
@@ -911,11 +968,12 @@ class AccountService:
             plan_type: str | None = None,
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
+            provider: str | None = None,
     ) -> list[str]:
         max_concurrency = max(1, int(config.image_account_concurrency or 1))
         return [
             token
-            for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
+            for token in self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types, provider)
             if int(self._image_inflight.get(token, 0)) < max_concurrency
         ]
 
@@ -925,15 +983,16 @@ class AccountService:
             plan_type: str | None = None,
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
+            provider: str | None = None,
     ) -> str:
         with self._image_slot_condition:
             while True:
-                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types):
+                if not self._list_ready_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types, provider):
                     raise RuntimeError(
-                        f"no available {plan_type or source_type or ''} image quota".replace("  ", " ").strip()
-                        if plan_type or source_type else "no available image quota"
+                        f"no available {provider or plan_type or source_type or ''} image quota".replace("  ", " ").strip()
+                        if provider or plan_type or source_type else "no available image quota"
                     )
-                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types)
+                tokens = self._list_available_candidate_tokens(excluded_tokens, plan_type, source_type, plan_types, provider)
                 if tokens:
                     access_token = tokens[self._index % len(tokens)]
                     self._index += 1
@@ -958,6 +1017,8 @@ class AccountService:
             plan_type: str | None = None,
             source_type: str | None = None,
             plan_types: set[str] | tuple[str, ...] | None = None,
+            provider: str | None = None,
+            excluded_tokens: set[str] | None = None,
     ) -> str:
         """从候选池中获取一个可用的图片生图 token。
 
@@ -965,13 +1026,14 @@ class AccountService:
         限制最大尝试次数防止 token rotation 导致无限循环。
         """
         max_attempts = 20  # 防止无限循环
-        attempted_tokens: set[str] = set()
+        attempted_tokens: set[str] = set(excluded_tokens or set())
         for _attempt in range(max_attempts):
             access_token = self._acquire_next_candidate_token(
                 excluded_tokens=attempted_tokens,
                 plan_type=plan_type,
                 source_type=source_type,
                 plan_types=plan_types,
+                provider=provider,
             )
             attempted_tokens.add(access_token)
             try:
@@ -989,12 +1051,13 @@ class AccountService:
                     and self._account_matches_plan_type(account or {}, plan_type)
                     and self._account_matches_any_plan_type(account or {}, plan_types)
                     and self._account_matches_source_type(account or {}, source_type)
+                    and self._account_matches_provider(account or {}, provider)
             ):
                 return str((account or {}).get("access_token") or access_token)
             self.release_image_slot(access_token)
         raise RuntimeError(
-            f"no available {plan_type or source_type or ''} image quota (tried {len(attempted_tokens)} tokens)".replace("  ", " ").strip()
-            if plan_type or source_type else f"no available image quota (tried {len(attempted_tokens)} tokens)"
+            f"no available {provider or plan_type or source_type or ''} image quota (tried {len(attempted_tokens)} tokens)".replace("  ", " ").strip()
+            if provider or plan_type or source_type else f"no available image quota (tried {len(attempted_tokens)} tokens)"
         )
 
     def get_text_access_token(
@@ -1014,6 +1077,7 @@ class AccountService:
                 token
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
+                   and not self.is_external_image_account(account)
                    and (
                        route is None
                        or self._normalize_account_type(account.get("type")) in route.account_types
@@ -1090,6 +1154,7 @@ class AccountService:
                 token
                 for item in self._accounts.values()
                 if item.get("status") == "限流"
+                   and not self.is_external_image_account(item)
                    and (token := item.get("access_token") or "")
             ]
 
@@ -1099,6 +1164,7 @@ class AccountService:
                 token
                 for item in self._accounts.values()
                 if item.get("status") == "正常"
+                   and not self.is_external_image_account(item)
                    and (token := item.get("access_token") or "")
             ]
 
@@ -1116,6 +1182,8 @@ class AccountService:
         payload = dict(item)
         payload.pop("accessToken", None)
         payload["access_token"] = access_token
+        if "provider" in payload:
+            payload["provider"] = AccountService._normalize_provider(payload.get("provider"))
         # CPA/Codex 导出文件里的 `type=codex` 是导出格式，不是号池套餐类型。
         if str(payload.get("type") or "").strip().lower() == "codex":
             payload["export_type"] = "codex"
@@ -1224,7 +1292,11 @@ class AccountService:
             account = self._normalize_account({**current, **updates, "access_token": access_token})
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if (
+                account.get("status") == "限流"
+                and config.auto_remove_rate_limited_accounts
+                and not self.is_external_image_account(account)
+            ):
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
@@ -1298,10 +1370,17 @@ class AccountService:
                 return False
         return True
 
-    def mark_image_result(self, access_token: str, success: bool) -> dict | None:
+    def mark_image_result(
+        self,
+        access_token: str,
+        success: bool,
+        *,
+        release_slot: bool = True,
+    ) -> dict | None:
         if not access_token:
             return None
-        self.release_image_slot(access_token)
+        if release_slot:
+            self.release_image_slot(access_token)
         with self._lock:
             access_token = self._resolve_access_token_locked(access_token)
             current = self._accounts.get(access_token)
@@ -1311,18 +1390,26 @@ class AccountService:
             next_item["last_used_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if success:
                 next_item["success"] = int(next_item.get("success") or 0) + 1
-                next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
-                if next_item["quota"] == 0:
-                    next_item["status"] = "限流"
-                    next_item["restore_at"] = next_item.get("restore_at") or None
-                elif next_item.get("status") == "限流":
+                if str(next_item.get("quota_mode") or "").strip().lower() == "external":
                     next_item["status"] = "正常"
+                    next_item["restore_at"] = None
+                else:
+                    next_item["quota"] = max(0, int(next_item.get("quota") or 0) - 1)
+                    if next_item["quota"] == 0:
+                        next_item["status"] = "限流"
+                        next_item["restore_at"] = next_item.get("restore_at") or None
+                    elif next_item.get("status") == "限流":
+                        next_item["status"] = "正常"
             else:
                 next_item["fail"] = int(next_item.get("fail") or 0) + 1
             account = self._normalize_account(next_item)
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if (
+                account.get("status") == "限流"
+                and config.auto_remove_rate_limited_accounts
+                and not self.is_external_image_account(account)
+            ):
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
@@ -1340,6 +1427,11 @@ class AccountService:
     ) -> dict[str, Any] | None:
         if not access_token:
             raise ValueError("access_token is required")
+
+        resolved_token, local_account = self._get_account_for_token(access_token)
+        if self.is_external_image_account(local_account):
+            self._record_refresh_success(resolved_token)
+            return self.get_account(resolved_token)
 
         active_token = self.refresh_access_token(access_token, event=f"{event}:preflight") or access_token
         try:
@@ -1489,12 +1581,13 @@ class AccountService:
         access_tokens = list(dict.fromkeys(token for token in access_tokens if token))
         if not access_tokens:
             items = self.list_accounts()
-            result = {"refreshed": 0, "errors": [], "items": items, "relogined": 0}
+            result = {"refreshed": 0, "skipped_external": 0, "errors": [], "items": items, "relogined": 0}
             if progress_id:
                 self.finish_refresh_progress(progress_id, result)
             return result
 
         refreshed = 0
+        skipped_external = 0
         errors = []
         max_workers = min(10, len(access_tokens))
 
@@ -1522,7 +1615,10 @@ class AccountService:
                         errors.append({"token": anonymize_token(token), "error": error_str})
                 else:
                     if account is not None:
-                        refreshed += 1
+                        if self.is_external_image_account(account):
+                            skipped_external += 1
+                        else:
+                            refreshed += 1
 
                 if progress_id:
                     self.update_refresh_progress(progress_id, token)
@@ -1558,6 +1654,7 @@ class AccountService:
 
         result = {
             "refreshed": refreshed,
+            "skipped_external": skipped_external,
             "errors": errors,
             "items": self.list_accounts(),
             "relogined": relogined,

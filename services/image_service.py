@@ -17,6 +17,8 @@ from services.image_tags_service import load_tags, remove_tags
 from utils.log import logger
 
 THUMBNAIL_SIZE = (320, 320)
+THUMBNAIL_LOCK = threading.Lock()
+THUMBNAIL_CACHE_CONTROL = "public, max-age=31536000, immutable"
 
 
 def _cleanup_empty_dirs(root: Path) -> None:
@@ -80,28 +82,35 @@ def _image_dimensions(path: Path) -> tuple[int, int] | None:
 
 def ensure_thumbnail(relative_path: str) -> Path:
     target = _thumbnail_path(relative_path)
-    source_mtime = 0.0
-    source: Path | None = None
-    if image_storage_service.has_local(relative_path):
-        source = _safe_image_path(relative_path)
-        source_mtime = source.stat().st_mtime
-    if target.exists() and (not source_mtime or target.stat().st_mtime >= source_mtime):
-        return target
+    with THUMBNAIL_LOCK:
+        source_mtime = 0.0
+        source: Path | None = None
+        if image_storage_service.has_local(relative_path):
+            source = _safe_image_path(relative_path)
+            source_mtime = source.stat().st_mtime
+        if target.exists() and (not source_mtime or target.stat().st_mtime >= source_mtime):
+            return target
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        image_source = source if source is not None else io.BytesIO(image_storage_service.get_bytes(relative_path))
-        with Image.open(image_source) as image:
-            image = ImageOps.exif_transpose(image)
-            if image.mode not in {"RGB", "RGBA"}:
-                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-            image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-            image.save(target, format="PNG", optimize=True)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail="failed to create thumbnail") from exc
-    return target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = target.with_suffix(".tmp")
+        try:
+            image_source = source if source is not None else io.BytesIO(image_storage_service.get_bytes(relative_path))
+            with Image.open(image_source) as image:
+                image = ImageOps.exif_transpose(image)
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+                image.save(tmp_path, format="PNG", optimize=True)
+            tmp_path.replace(target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise HTTPException(status_code=422, detail="failed to create thumbnail") from exc
+        return target
 
 
 def get_thumbnail_response(relative_path: str) -> FileResponse:
@@ -109,6 +118,7 @@ def get_thumbnail_response(relative_path: str) -> FileResponse:
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
+        "Cache-Control": THUMBNAIL_CACHE_CONTROL,
     }
     return FileResponse(ensure_thumbnail(relative_path), headers=headers)
 

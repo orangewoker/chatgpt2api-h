@@ -7,12 +7,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Iterator
 
 import tiktoken
 
 from services.account_service import account_service
 from services.config import config
+from services.image_providers import AgnesImageError, AgnesImageProvider
 from services.image_storage_service import image_storage_service
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from services.image_upscale import upscale_image_bytes
@@ -20,6 +22,7 @@ from utils.helper import (
     IMAGE_MODELS,
     UpstreamHTTPError,
     extract_image_from_message_content,
+    is_agnes_image_model,
     is_codex_image_model,
     is_supported_image_model,
     split_image_model,
@@ -316,6 +319,7 @@ class ConversationRequest:
     images: list[str] | None = None
     n: int = 1
     size: str | None = None
+    ratio: str | None = None
     quality: str = "auto"
     response_format: str = "b64_json"
     base_url: str | None = None
@@ -1311,6 +1315,167 @@ def stream_codex_image_outputs(
     raise ImageGenerationError("No image result found in response")
 
 
+def _agnes_public_error(exc: AgnesImageError) -> ImageGenerationError:
+    status_code = int(exc.status_code or 502)
+    error_type = exc.error_type
+    code = exc.code
+    message = "The Agnes image service could not complete the request."
+    if status_code in {401, 403}:
+        status_code = 502
+        error_type = "server_error"
+        code = "upstream_authentication_error" if exc.status_code == 401 else "upstream_permission_denied"
+        message = "The configured Agnes API key was rejected by the upstream service."
+    elif status_code == 402:
+        status_code = 429
+        error_type = "rate_limit_error"
+        code = "insufficient_quota"
+        message = "The configured Agnes account has insufficient upstream quota."
+    elif status_code == 429:
+        error_type = "rate_limit_error"
+        code = "rate_limit_exceeded"
+        message = "The Agnes image service is rate limited. Please try again later."
+    elif status_code in {400, 422}:
+        error_type = "invalid_request_error"
+        if exc.code in {"invalid_ratio", "invalid_prompt", "invalid_image"}:
+            message = str(exc)
+            code = exc.code
+        else:
+            message = "The Agnes image request was rejected by the upstream service."
+            code = "invalid_request"
+    elif status_code == 504:
+        code = "upstream_timeout"
+        message = "The Agnes image request timed out."
+    else:
+        status_code = 502
+        error_type = "server_error"
+        code = "upstream_error"
+    return ImageGenerationError(
+        message,
+        status_code=status_code,
+        error_type=error_type,
+        code=code,
+    )
+
+
+def _record_agnes_result(access_token: str, success: bool) -> None:
+    try:
+        account_service.mark_image_result(access_token, success, release_slot=False)
+    except Exception as exc:
+        logger.warning({
+            "event": "agnes_account_result_persist_failed",
+            "success": success,
+            "error_type": type(exc).__name__,
+        })
+
+
+def _update_agnes_account(access_token: str, updates: dict[str, Any]) -> None:
+    try:
+        account_service.update_account(access_token, updates, quiet=True)
+    except Exception as exc:
+        logger.warning({
+            "event": "agnes_account_status_persist_failed",
+            "status": updates.get("status"),
+            "error_type": type(exc).__name__,
+        })
+
+
+def _generate_single_agnes_image(
+        request: ConversationRequest,
+        index: int,
+        total: int,
+) -> list[ImageOutput]:
+    attempted_tokens: set[str] = set()
+    last_error: AgnesImageError | None = None
+    while True:
+        try:
+            token = account_service.get_available_access_token(
+                provider="agnes",
+                excluded_tokens=attempted_tokens,
+            )
+        except RuntimeError as exc:
+            if last_error is not None:
+                raise _agnes_public_error(last_error) from last_error
+            raise ImageGenerationError(
+                "No available Agnes API key.",
+                status_code=429,
+                error_type="rate_limit_error",
+                code="insufficient_quota",
+            ) from exc
+
+        attempted_tokens.add(token)
+        account = account_service.get_account(token) or {}
+        provider: AgnesImageProvider | None = None
+        try:
+            if request.progress_callback:
+                request.progress_callback("getting_account")
+                request.progress_callback("generating_image")
+            provider = AgnesImageProvider(token, account=account)
+            result = provider.generate(
+                prompt=prompt_with_global_system(request.prompt),
+                size=request.size,
+                ratio=request.ratio,
+                images=request.images or None,
+            )
+            data = format_image_result(
+                result.get("data") if isinstance(result.get("data"), list) else [],
+                request.prompt,
+                request.response_format,
+                request.base_url,
+                int(result.get("created") or time.time()),
+            )["data"]
+            if not data:
+                raise AgnesImageError(
+                    "Agnes completed without generating an image",
+                    code="no_image_generated",
+                )
+            if request.progress_callback:
+                request.progress_callback("receiving_image")
+            _record_agnes_result(token, True)
+            return [ImageOutput(
+                kind="result",
+                model=request.model,
+                index=index,
+                total=total,
+                created=int(result.get("created") or time.time()),
+                data=data,
+            )]
+        except AgnesImageError as exc:
+            last_error = exc
+            if int(exc.status_code or 0) in {400, 422}:
+                raise _agnes_public_error(exc) from exc
+
+            _record_agnes_result(token, False)
+            if int(exc.status_code or 0) in {401, 403}:
+                _update_agnes_account(token, {"status": "异常"})
+                continue
+            if int(exc.status_code or 0) in {402, 429}:
+                updates: dict[str, Any] = {"status": "限流"}
+                if int(exc.status_code or 0) == 429:
+                    retry_after = max(1, min(int(exc.retry_after_seconds or 60), 24 * 60 * 60))
+                    updates["restore_at"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                    ).isoformat()
+                else:
+                    updates["restore_at"] = None
+                _update_agnes_account(token, updates)
+                continue
+            # A timed-out or 5xx generation may already have been billed and
+            # completed upstream. Do not retry those uncertain POST requests.
+            raise _agnes_public_error(exc) from exc
+        except Exception as exc:
+            _record_agnes_result(token, False)
+            raise ImageGenerationError(
+                "The Agnes image service could not complete the request.",
+                status_code=502,
+                error_type="server_error",
+                code="upstream_error",
+            ) from exc
+        finally:
+            if provider is not None:
+                provider.close()
+            account_service.release_image_slot(token)
+
+
 def _generate_single_image(
         request: ConversationRequest,
         index: int,
@@ -1321,6 +1486,9 @@ def _generate_single_image(
     该函数在独立线程中运行，每个线程使用不同的账号，
     实现并行生图，避免串行超时阻塞。
     """
+    if is_agnes_image_model(request.model):
+        return _generate_single_agnes_image(request, index, total)
+
     # 模型返回文本而非图片的最大重试次数
     MAX_TEXT_REPLY_RETRIES = 3
     # TLS 连接错误最大重试次数
@@ -1346,6 +1514,7 @@ def _generate_single_image(
                 plan_type=plan_type,
                 source_type="codex" if codex_model else None,
                 plan_types=("plus", "team", "pro") if codex_model and not plan_type else None,
+                provider="chatgpt",
             )
         except RuntimeError as exc:
             raise ImageGenerationError(str(exc) or "image generation failed", account_email=account_email) from exc
@@ -1649,6 +1818,10 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 })
 
     if not emitted:
+        for index in range(1, request.n + 1):
+            error = errors.get(index)
+            if isinstance(error, ImageGenerationError):
+                raise error
         if not last_error:
             last_error = "no account in the pool could generate images — check account quota and rate-limit status"
         raise ImageGenerationError(image_stream_error_message(last_error), conversation_id="")

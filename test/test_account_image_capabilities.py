@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
-os.environ.setdefault("CHATGPT2API_AUTH_KEY", "test-auth")
 
 from services.account_service import AccountService
 from services.auth_service import AuthService
@@ -35,6 +32,7 @@ class AccountCapabilityTests(unittest.TestCase):
             service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
             self.assertEqual(service._normalize_account_type("prolite"), "ProLite")
             self.assertEqual(service._normalize_account_type("pro_lite"), "ProLite")
+            self.assertEqual(service._normalize_account_type("agnes"), "Agnes")
 
     def test_search_account_type_ignores_unrelated_scalar_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -204,6 +202,16 @@ class AuthServiceTests(unittest.TestCase):
             self.assertIsNotNone(authed)
             self.assertEqual(authed["id"], item["id"])
             self.assertIsNotNone(authed["last_used_at"])
+
+    def test_create_user_key_accepts_custom_login_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AuthService(JSONStorageBackend(Path(tmp_dir) / "accounts.json", Path(tmp_dir) / "auth_keys.json"))
+
+            item, raw_key = service.create_key(role="user", name="Alice", key="A1")
+
+            self.assertEqual(item["name"], "Alice")
+            self.assertEqual(raw_key, "A1")
+            self.assertEqual(service.authenticate("A1")["id"], item["id"])
 
     def test_update_user_key_replaces_raw_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

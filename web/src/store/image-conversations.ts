@@ -5,6 +5,7 @@ import localforage from "localforage";
 import type { ImageModel } from "@/lib/api";
 
 export type ImageConversationMode = "generate" | "edit";
+export type ImageChannel = "chatgpt" | "agnes";
 
 export type StoredReferenceImage = {
   name: string;
@@ -15,6 +16,8 @@ export type StoredReferenceImage = {
 export type StoredImage = {
   id: string;
   taskId?: string;
+  model?: ImageModel;
+  channel?: ImageChannel;
   status?: "loading" | "success" | "error";
   taskStatus?: "queued" | "running";
   progress?: string;
@@ -34,6 +37,8 @@ export type ImageTurn = {
   id: string;
   prompt: string;
   model: ImageModel;
+  /** Models used for this batch. New generations run both configured channels. */
+  models?: ImageModel[];
   mode: ImageConversationMode;
   referenceImages: StoredReferenceImage[];
   count: number;
@@ -74,6 +79,8 @@ function normalizeStoredImage(image: StoredImage): StoredImage {
   const normalized = {
     ...image,
     taskId: typeof image.taskId === "string" && image.taskId ? image.taskId : undefined,
+    model: typeof image.model === "string" && image.model ? image.model : undefined,
+    channel: image.channel === "chatgpt" || image.channel === "agnes" ? image.channel : undefined,
     taskStatus: image.taskStatus === "queued" || image.taskStatus === "running" ? image.taskStatus : undefined,
     url: typeof image.url === "string" && image.url ? image.url : undefined,
     revised_prompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
@@ -146,6 +153,9 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     id: String(turn.id || `${Date.now()}`),
     prompt: String(turn.prompt || ""),
     model: (turn.model as ImageModel) || "gpt-image-2",
+    models: Array.isArray(turn.models)
+      ? turn.models.filter((model): model is ImageModel => typeof model === "string" && model.trim().length > 0)
+      : undefined,
     mode: turn.mode === "edit" ? "edit" : "generate",
     referenceImages: getLegacyReferenceImages(turn),
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
@@ -307,9 +317,9 @@ export function getImageConversationStats(conversation: ImageConversation | null
         return acc;
       }
       if (turn.status === "queued") {
-        acc.queued += 1;
+        acc.queued += Math.max(1, turn.images.filter((image) => image.status === "loading").length);
       } else if (turn.status === "generating") {
-        acc.running += 1;
+        acc.running += Math.max(1, turn.images.filter((image) => image.status === "loading").length);
       }
       return acc;
     },

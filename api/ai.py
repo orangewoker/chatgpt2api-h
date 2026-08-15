@@ -26,6 +26,7 @@ class ImageGenerationRequest(BaseModel):
     model: str = "gpt-image-2"
     n: int = Field(default=1, ge=1, le=4)
     size: str | None = None
+    ratio: str | None = None
     quality: str = "auto"
     response_format: str = "b64_json"
     history_disabled: bool = True

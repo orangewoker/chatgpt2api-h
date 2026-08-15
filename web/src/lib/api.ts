@@ -19,6 +19,9 @@ export type ImageStorageSettings = {
 export type Account = {
   access_token: string;
   type: AccountType;
+  provider?: "chatgpt" | "agnes" | null;
+  quota_mode?: "local" | "external";
+  label?: string | null;
   source_type?: string | null;
   status: AccountStatus;
   quota: number;
@@ -45,6 +48,9 @@ export type AccountImportPayload = {
   type?: string;
   export_type?: string;
   source_type?: string;
+  provider?: "chatgpt" | "agnes";
+  quota_mode?: "local" | "external";
+  label?: string;
   [key: string]: unknown;
 };
 
@@ -77,6 +83,7 @@ type AccountMutationResponse = {
   skipped?: number;
   removed?: number;
   refreshed?: number;
+  skipped_external?: number;
   relogined?: number;
   errors?: Array<{ access_token: string; error: string }>;
 };
@@ -84,6 +91,7 @@ type AccountMutationResponse = {
 export type AccountRefreshResponse = {
   items: Account[];
   refreshed: number;
+  skipped_external?: number;
   relogined?: number;
   errors: Array<{ access_token: string; error: string }>;
 };
@@ -290,6 +298,7 @@ export type ImageTask = {
   mode: "generate" | "edit";
   model?: ImageModel;
   size?: string;
+  ratio?: string;
   quality?: string;
   created_at: string;
   updated_at: string;
@@ -418,7 +427,7 @@ export async function updateAccount(
   });
 }
 
-export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality = "auto") {
+export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality = "auto", ratio?: string) {
   return httpRequest<ImageResponse>(
     "/v1/images/generations",
     {
@@ -427,6 +436,7 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
         prompt,
         ...(model ? { model } : {}),
         ...(size ? { size } : {}),
+        ...(ratio ? { ratio } : {}),
         quality,
         n: 1,
         response_format: "b64_json",
@@ -435,7 +445,7 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
   );
 }
 
-export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string, quality = "auto") {
+export async function editImage(files: File | File[], prompt: string, model?: ImageModel, size?: string, quality = "auto", ratio?: string) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
 
@@ -449,6 +459,9 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   if (size) {
     formData.append("size", size);
   }
+  if (ratio) {
+    formData.append("ratio", ratio);
+  }
   formData.append("quality", quality);
   formData.append("n", "1");
 
@@ -461,7 +474,14 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string, quality = "auto") {
+export async function createImageGenerationTask(
+  clientTaskId: string,
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+  quality = "auto",
+  ratio?: string,
+) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
@@ -469,6 +489,7 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      ...(ratio ? { ratio } : {}),
       quality,
     },
   });
@@ -481,6 +502,7 @@ export async function createImageEditTask(
   model?: ImageModel,
   size?: string,
   quality = "auto",
+  ratio?: string,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -495,6 +517,9 @@ export async function createImageEditTask(
   }
   if (size) {
     formData.append("size", size);
+  }
+  if (ratio) {
+    formData.append("ratio", ratio);
   }
   formData.append("quality", quality);
 
@@ -681,10 +706,10 @@ export async function fetchUserKeys() {
   return httpRequest<{ items: UserKey[] }>("/api/auth/users");
 }
 
-export async function createUserKey(name: string) {
+export async function createUserKey(name: string, key = "") {
   return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/auth/users", {
     method: "POST",
-    body: { name },
+    body: { name, ...(key ? { key } : {}) },
   });
 }
 

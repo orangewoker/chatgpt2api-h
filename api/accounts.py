@@ -37,6 +37,7 @@ from services.sub2api_service import (
 
 class UserKeyCreateRequest(BaseModel):
     name: str = ""
+    key: str = ""
 
 
 class UserKeyUpdateRequest(BaseModel):
@@ -169,7 +170,7 @@ def create_router() -> APIRouter:
     async def create_user_key(body: UserKeyCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         try:
-            item, raw_key = auth_service.create_key(role="user", name=body.name)
+            item, raw_key = auth_service.create_key(role="user", name=body.name, key=body.key)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         return {"item": item, "key": raw_key, "items": auth_service.list_keys(role="user")}
@@ -220,20 +221,24 @@ def create_router() -> APIRouter:
         tokens = _unique_tokens([*body.tokens, *payload_tokens])
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
-        if account_payloads:
-            result = account_service.add_account_items(account_payloads)
-            payload_token_set = set(_unique_tokens(payload_tokens))
-            extra_tokens = [token for token in tokens if token not in payload_token_set]
-            if extra_tokens:
-                extra_result = account_service.add_accounts(extra_tokens)
-                result["added"] = int(result.get("added") or 0) + int(extra_result.get("added") or 0)
-                result["skipped"] = int(result.get("skipped") or 0) + int(extra_result.get("skipped") or 0)
-        else:
-            result = account_service.add_accounts(tokens)
+        try:
+            if account_payloads:
+                result = account_service.add_account_items(account_payloads)
+                payload_token_set = set(_unique_tokens(payload_tokens))
+                extra_tokens = [token for token in tokens if token not in payload_token_set]
+                if extra_tokens:
+                    extra_result = account_service.add_accounts(extra_tokens)
+                    result["added"] = int(result.get("added") or 0) + int(extra_result.get("added") or 0)
+                    result["skipped"] = int(result.get("skipped") or 0) + int(extra_result.get("skipped") or 0)
+            else:
+                result = account_service.add_accounts(tokens)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         refresh_result = account_service.refresh_accounts(tokens)
         return {
             **result,
             "refreshed": refresh_result.get("refreshed", 0),
+            "skipped_external": refresh_result.get("skipped_external", 0),
             "errors": refresh_result.get("errors", []),
             "items": refresh_result.get("items", result.get("items", [])),
         }

@@ -63,6 +63,8 @@ const qualityOptions = [
   { value: "medium", label: "中" },
   { value: "high", label: "高" },
 ];
+const agnesTierOptions = ["1k", "2k", "3k", "4k"];
+const agnesRatioOptions = ["auto", "1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"];
 const aspectOptions = [
   { ratio: "1:1", tier: "1k", width: "1024", height: "1024", label: "1:1", icon: Square },
   { ratio: "2:3", tier: "1k", width: "1024", height: "1536", label: "2:3", icon: RectangleVertical },
@@ -123,10 +125,17 @@ export function ImageComposer({
     () => imageModels.map((model) => ({ value: model, label: model })),
     [imageModels],
   );
-  const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
-  const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
-  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
+  const isAgnesModel = imageModel.toLowerCase() === "agnes-image-2.1-flash";
+  const agnesTier = agnesTierOptions.includes(imageTier) ? imageTier : "1k";
+  const qualityLabel = isAgnesModel
+    ? "上游自动"
+    : qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
+  const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${isAgnesModel ? agnesTier : imageTier})`;
+  const imageSizeLabel = `双渠道 · ${qualityLabel} · ${ratioLabel} · 每路 ${imageCount || 1} 张`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
+  const supportsHighResolution = ["codex", "agnes-image"].some((value) =>
+    imageModel.toLowerCase().includes(value),
+  );
 
   useEffect(() => {
     if (!isSizeMenuOpen) {
@@ -354,8 +363,16 @@ export function ImageComposer({
                         }}
                       >
                         <h3 className="mb-3 text-base font-semibold text-stone-950">图像设置</h3>
+                        <div className="mb-3 rounded-2xl bg-stone-100 p-3">
+                          <div className="mb-2 text-sm font-medium text-stone-900">并行生图渠道</div>
+                          <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">ChatGPT · gpt-image-2</span>
+                            <span className="rounded-full bg-violet-100 px-2.5 py-1 text-violet-700">Agnes · image-2.1-flash</span>
+                          </div>
+                          <p className="mt-2 text-xs leading-5 text-stone-500">每次提交会同时调用两路；生成数量按每个渠道分别计算。</p>
+                        </div>
                         <div className="mb-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">模型</div>
+                          <div className="mb-2 text-sm font-medium text-stone-900">ChatGPT 模型</div>
                           <Select
                             value={imageModel}
                             onValueChange={(value) => {
@@ -394,7 +411,12 @@ export function ImageComposer({
                         </div>
                         <div className="mb-3">
                           <div className="mb-2 text-sm font-medium text-stone-900">质量</div>
-                          <div className="grid grid-cols-4 gap-2">
+                          {isAgnesModel ? (
+                            <div className="rounded-xl bg-stone-100 px-3 py-2 text-sm text-stone-600">
+                              Agnes 质量由上游自动决定。
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-4 gap-2">
                             {qualityOptions.map((option) => {
                               const active = option.value === imageQuality;
                               return (
@@ -411,13 +433,29 @@ export function ImageComposer({
                                 </button>
                               );
                             })}
-                          </div>
+                            </div>
+                          )}
                         </div>
                         <div className="mb-3">
                           <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
                             尺寸 <Info className="size-3.5 text-stone-400" />
                           </div>
-                          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                          {isAgnesModel ? (
+                            <Select
+                              value={agnesTier}
+                              onValueChange={onImageTierChange}
+                            >
+                              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {agnesTierOptions.map((tier) => (
+                                  <SelectItem key={tier} value={tier}>{tier.toUpperCase()}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                             <div className="flex items-center rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">
                               <span className="mr-2 text-stone-500">W</span>
                               <Input
@@ -441,25 +479,52 @@ export function ImageComposer({
                                 className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
                               />
                             </div>
-                          </div>
+                            </div>
+                          )}
                         </div>
                         <div className="mb-3">
                           <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
                             宽高比 <Info className="size-3.5 text-stone-400" />
                           </div>
-                          <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+                          {isAgnesModel ? (
+                            <Select
+                              value={agnesRatioOptions.includes(imageRatio) ? imageRatio : "auto"}
+                              onValueChange={(ratio) => {
+                                onImageRatioChange(ratio);
+                                if (!agnesTierOptions.includes(imageTier)) {
+                                  onImageTierChange("1k");
+                                }
+                              }}
+                            >
+                              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {agnesRatioOptions.map((ratio) => (
+                                  <SelectItem key={ratio} value={ratio}>{ratio}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
                             {aspectOptions.map((option) => {
                               const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
                               const Icon = option.icon;
+                              const disabled = !supportsHighResolution && (option.tier === "2k" || option.tier === "4k");
                               return (
                                 <button
                                   key={`${option.ratio}-${option.tier}-${option.label}`}
                                   type="button"
+                                  disabled={disabled}
                                   className={cn(
                                     "flex h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
                                     active && "border-stone-950",
+                                    disabled && "cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 hover:border-stone-100 hover:bg-stone-50",
                                   )}
                                   onClick={() => {
+                                    if (disabled) {
+                                      return;
+                                    }
                                     onImageRatioChange(option.ratio);
                                     onImageTierChange(option.tier);
                                     onImageWidthChange(option.width);
@@ -477,7 +542,8 @@ export function ImageComposer({
                                 </button>
                               );
                             })}
-                          </div>
+                            </div>
+                          )}
                         </div>
                         <div className="border-t border-stone-100 pt-3">
                           <div className="mb-2 text-sm font-medium text-stone-900">生成数量</div>

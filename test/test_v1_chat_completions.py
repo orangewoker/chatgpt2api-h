@@ -5,6 +5,10 @@ import time
 import unittest
 
 import requests
+import pytest
+
+
+pytestmark = pytest.mark.live
 
 from utils.helper import save_images_from_text
 

@@ -255,7 +255,7 @@ export function ConfigCard() {
               placeholder="30"
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
-            <p className="text-xs text-stone-500">单位秒，超时后点击"继续等待"额外等待的时间。</p>
+            <p className="text-xs text-stone-500">单位秒，超时后点击&quot;继续等待&quot;额外等待的时间。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片二次确认等待时间</label>

@@ -20,6 +20,15 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pytest>=9.0,<10",
+    "requests>=2.32",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "--strict-config --strict-markers"
+markers = [
+    "live: requires a running local server, configured accounts, and real upstream network",
 ]
 
 [[tool.uv.index]]

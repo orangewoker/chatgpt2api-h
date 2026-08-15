@@ -38,7 +38,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "account-json" | "oauth";
+type ImportMethod = "menu" | "token" | "agnes" | "session" | "codex-auth" | "account-json" | "oauth";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
@@ -185,6 +185,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
+  const [agnesKeyInput, setAgnesKeyInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
   const [codexAuthInput, setCodexAuthInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -201,6 +202,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const resetState = () => {
     setMethod("menu");
     setTokenInput("");
+    setAgnesKeyInput("");
     setSessionInput("");
     setCodexAuthInput("");
     setPendingAccountJsonImport(null);
@@ -239,8 +241,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
         );
       } else {
+        const hasExternalProvider = accountPayloads.some((item) => item.provider === "agnes");
         toast.success(
-          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，已自动刷新账号信息`,
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，${hasExternalProvider ? "首次生图时验证 API Key" : "已自动刷新账号信息"}`,
         );
       }
     } catch (error) {
@@ -253,6 +256,19 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
 
   const handleImportTokenText = async () => {
     await submitTokens(splitTokens(tokenInput), "Access Token 导入完成");
+  };
+
+  const handleImportAgnesKeys = async () => {
+    const keys = splitTokens(agnesKeyInput);
+    const accounts: AccountImportPayload[] = keys.map((key, index) => ({
+      access_token: key,
+      provider: "agnes",
+      source_type: "api_key",
+      type: "Agnes",
+      quota_mode: "external",
+      label: keys.length === 1 ? "Agnes" : `Agnes ${index + 1}`,
+    }));
+    await submitTokens(keys, "Agnes API Key 导入完成", accounts);
   };
 
   // 起授权：拿 authorize URL，立刻在新窗口打开，方便用户登录
@@ -444,6 +460,47 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const renderMethodBody = () => {
+    if (method === "agnes") {
+      const keyCount = splitTokens(agnesKeyInput).length;
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setMethod("menu")}
+              className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
+            >
+              <ArrowLeft className="size-4" />
+              返回导入方式
+            </button>
+            <span className="text-xs text-stone-400">当前识别 {keyCount} 个 Key</span>
+          </div>
+          <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600">
+            Key 仅用于 <code className="rounded bg-stone-200 px-1">agnes-image-2.1-flash</code>，
+            不会进入 ChatGPT 文本或图片账号池。Agnes 未提供额度查询接口，因此界面显示为外部计费。
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-stone-700">Agnes API Key</label>
+            <Textarea
+              placeholder="每行一个 Agnes API Key..."
+              value={agnesKeyInput}
+              onChange={(event) => setAgnesKeyInput(event.target.value)}
+              className="min-h-40 resize-none rounded-xl border-stone-200 font-mono text-xs"
+            />
+          </div>
+          <a
+            href="https://www.agnes-ai.com/zh-Hans/docs/agnes-image-21-flash.md"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-stone-500 underline-offset-4 hover:text-stone-800 hover:underline"
+          >
+            查看 Agnes Image 2.1 Flash 文档
+            <ExternalLink className="size-3.5" />
+          </a>
+        </div>
+      );
+    }
+
     if (method === "token") {
       const tokenCount = splitTokens(tokenInput).length;
 
@@ -557,9 +614,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <div className="font-medium text-stone-800">操作步骤</div>
             <ol className="list-decimal pl-5 space-y-1">
               <li>（可选）填写你 ChatGPT 账号的邮箱，登录页会预填。</li>
-              <li>点击下方"打开授权页面"，在新标签里登录自己的 ChatGPT 账号。</li>
+              <li>点击下方&quot;打开授权页面&quot;，在新标签里登录自己的 ChatGPT 账号。</li>
               <li>登录完成后浏览器会跳到 <code className="rounded bg-stone-200 px-1">platform.openai.com/auth/callback?code=...</code>。立刻从地址栏复制整段 URL（或开 F12 在 Network 里抓到 callback 那一行，右键 Copy → Copy URL）。</li>
-              <li>把 callback URL 粘到下面输入框，点"完成导入"。</li>
+              <li>把 callback URL 粘到下面输入框，点&quot;完成导入&quot;。</li>
             </ol>
           </div>
           <div className="space-y-2">
@@ -634,7 +691,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <div className="font-medium">注意</div>
             <div>
               授权码（code）只能使用一次。如果浏览器的 callback 页加载完成、显示了 OpenAI 的错误页，那 code 大概率已经被消耗，
-              请点击"重新生成"再走一次。整个流程在 10 分钟内完成即可。
+              请点击&quot;重新生成&quot;再走一次。整个流程在 10 分钟内完成即可。
             </div>
           </div>
         </div>
@@ -721,6 +778,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => setMethod("oauth")}
         />
         <MethodCard
+          title="导入 Agnes API Key"
+          description="接入 Agnes Image 2.1 Flash，支持文生图、图生图和多参考图。"
+          icon={KeyRound}
+          onClick={() => setMethod("agnes")}
+        />
+        <MethodCard
           title="导入 Access Token"
           description="支持直接粘贴，一行一个；也支持从 TXT 文件读取，一行一个。"
           icon={KeyRound}
@@ -788,6 +851,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 ? "导入账户"
                 : method === "token"
                   ? "导入 Access Token"
+                  : method === "agnes"
+                    ? "导入 Agnes API Key"
                   : method === "session"
                     ? "导入 Session JSON"
                     : method === "codex-auth"
@@ -801,6 +866,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                 ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
                 : method === "token"
                   ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
+                  : method === "agnes"
+                    ? "导入一个或多个 Agnes API Key；首次真实生图请求会完成有效性验证。"
                   : method === "session"
                     ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
                     : method === "codex-auth"
@@ -830,6 +897,16 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               >
                 {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
                 导入 Token
+              </Button>
+            ) : null}
+            {method === "agnes" ? (
+              <Button
+                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+                onClick={() => void handleImportAgnesKeys()}
+                disabled={footerDisabled || splitTokens(agnesKeyInput).length === 0}
+              >
+                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                导入 API Key
               </Button>
             ) : null}
             {method === "session" ? (

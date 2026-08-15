@@ -235,6 +235,8 @@ def image_chat_response(body: dict[str, Any]) -> dict[str, Any]:
         prompt=prompt,
         model=model,
         n=n,
+        size=body.get("size"),
+        ratio=str(body.get("ratio") or "") or None,
         response_format="b64_json",
         images=encode_images(images) or None,
     )))
@@ -254,6 +256,8 @@ def image_chat_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         prompt=prompt,
         model=model,
         n=n,
+        size=body.get("size"),
+        ratio=str(body.get("ratio") or "") or None,
         response_format="b64_json",
         images=encode_images(images) or None,
     ))

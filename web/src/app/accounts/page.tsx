@@ -101,6 +101,7 @@ function formatCompact(value: number) {
 }
 
 function formatQuota(account: Account) {
+  if (account.quota_mode === "external") return "外部";
   return String(Math.max(0, account.quota));
 }
 
@@ -130,12 +131,17 @@ function formatRestoreAt(value?: string | null) {
 
 function formatQuotaSummary(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status === "正常");
-  return formatCompact(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+  const localQuota = availableAccounts
+    .filter((account) => account.quota_mode !== "external")
+    .reduce((sum, account) => sum + Math.max(0, account.quota), 0);
+  const hasExternal = availableAccounts.some((account) => account.quota_mode === "external");
+  return hasExternal ? (localQuota > 0 ? `${formatCompact(localQuota)} + 外部` : "外部") : formatCompact(localQuota);
 }
 
 function maskToken(token?: string) {
   if (!token) return "—";
-  if (token.length <= 18) return token;
+  if (token.length <= 8) return "•".repeat(token.length);
+  if (token.length <= 18) return `${token.slice(0, 4)}...${token.slice(-4)}`;
   return `${token.slice(0, 16)}...${token.slice(-8)}`;
 }
 
@@ -251,7 +257,9 @@ function AccountsPageContent() {
     const normalizedQuery = query.trim().toLowerCase();
     return accounts.filter((account) => {
       const searchMatched =
-        normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
+        normalizedQuery.length === 0
+        || (account.email ?? "").toLowerCase().includes(normalizedQuery)
+        || (account.label ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || displayAccountType(account) === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
       return searchMatched && typeMatched && statusMatched;
@@ -664,9 +672,11 @@ function AccountsPageContent() {
     setIsTestingProxy(true);
     try {
       const data = await testProxy(candidate);
-      data.result.ok
-        ? toast.success(`代理可用（${data.result.latency_ms} ms，HTTP ${data.result.status}）`)
-        : toast.error(`代理不可用：${data.result.error ?? "未知错误"}`);
+      if (data.result.ok) {
+        toast.success(`代理可用（${data.result.latency_ms} ms，HTTP ${data.result.status}）`);
+      } else {
+        toast.error(`代理不可用：${data.result.error ?? "未知错误"}`);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "测试代理失败");
     } finally {
@@ -740,6 +750,7 @@ function AccountsPageContent() {
               setAccounts(items);
               setSelectedIds([]);
               setPage(1);
+              void loadModels();
             }}
           />
           <Button
@@ -1125,7 +1136,7 @@ function AccountsPageContent() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3">
-                          <div className="text-xs leading-5 text-stone-500">{account.email ?? "—"}</div>
+                          <div className="text-xs leading-5 text-stone-500">{account.label ?? account.email ?? "—"}</div>
                         </td>
                         <td className="px-4 py-3 text-xs leading-5 text-stone-500">
                           {(() => {

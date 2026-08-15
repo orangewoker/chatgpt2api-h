@@ -15,11 +15,19 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from services.proxy_service import proxy_settings
+from utils.url_safety import (
+    ResponseBodyTooLarge,
+    UnsafeOutboundURL,
+    read_limited_response_body,
+    validate_outbound_http_url,
+)
 
 ImageInput = tuple[bytes, str, str]
 ImageSource = str | UploadFile | ImageInput
 
 MAX_IMAGE_REFERENCE_BYTES = 50 * 1024 * 1024
+MAX_IMAGE_REFERENCES = 10
+MAX_TOTAL_IMAGE_REFERENCE_BYTES = 100 * 1024 * 1024
 IMAGE_REFERENCE_FIELDS = {"image", "image[]", "images", "images[]", "image_url", "image_url[]"}
 MASK_REFERENCE_FIELDS = {"mask", "mask[]"}
 
@@ -70,6 +78,7 @@ def _payload_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
         "model": _clean(fields.get("model"), "gpt-image-2"),
         "n": _parse_count(fields.get("n")),
         "size": _clean(fields.get("size")) or None,
+        "ratio": _clean(fields.get("ratio")) or None,
         "quality": _clean(fields.get("quality"), "auto"),
         "response_format": _clean(fields.get("response_format"), "b64_json"),
         "stream": _parse_bool(fields.get("stream")),
@@ -183,7 +192,7 @@ async def parse_image_edit_request(request: Request) -> tuple[dict[str, Any], li
 
     form = await request.form()
     fields: dict[str, Any] = {}
-    for key in ("client_task_id", "prompt", "model", "n", "size", "quality", "response_format", "stream"):
+    for key in ("client_task_id", "prompt", "model", "n", "size", "ratio", "quality", "response_format", "stream"):
         value = form.get(key)
         if isinstance(value, str):
             fields[key] = value
@@ -260,50 +269,74 @@ def _download_image_url(url: str) -> ImageInput:
     source = _clean(url)
     if source.startswith("data:"):
         return _decode_data_url(source)
-    parsed = urlparse(source)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    try:
+        parsed = validate_outbound_http_url(source)
+    except UnsafeOutboundURL:
         raise HTTPException(status_code=400, detail={"error": "image_url must be an http or https URL"})
     try:
         response = requests.get(
             source,
             headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": "chatgpt2api image fetcher"},
             timeout=60,
-            allow_redirects=True,
+            allow_redirects=False,
+            stream=True,
             **proxy_settings.build_session_kwargs(),
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: {exc}"}) from exc
-    if not 200 <= response.status_code < 300:
-        raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: HTTP {response.status_code}"})
-    content_length = _clean(response.headers.get("content-length"))
-    if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_REFERENCE_BYTES:
-        raise HTTPException(status_code=400, detail={"error": "image_url exceeds 50MB limit"})
-    data = response.content
-    if not data:
-        raise HTTPException(status_code=400, detail={"error": "image_url returned empty content"})
-    if len(data) > MAX_IMAGE_REFERENCE_BYTES:
-        raise HTTPException(status_code=400, detail={"error": "image_url exceeds 50MB limit"})
-    mime_type = _response_mime_type(response, parsed.path)
-    return data, _filename_from_url(parsed.path, mime_type), mime_type
+        raise HTTPException(status_code=400, detail={"error": "image_url fetch failed"}) from exc
+    try:
+        if not 200 <= response.status_code < 300:
+            raise HTTPException(status_code=400, detail={"error": f"image_url fetch failed: HTTP {response.status_code}"})
+        content_length = _clean(response.headers.get("content-length"))
+        if content_length and content_length.isdigit() and int(content_length) > MAX_IMAGE_REFERENCE_BYTES:
+            raise HTTPException(status_code=400, detail={"error": "image_url exceeds 50MB limit"})
+        try:
+            data = read_limited_response_body(response, MAX_IMAGE_REFERENCE_BYTES)
+        except ResponseBodyTooLarge as exc:
+            raise HTTPException(status_code=400, detail={"error": "image_url exceeds 50MB limit"}) from exc
+        if not data:
+            raise HTTPException(status_code=400, detail={"error": "image_url returned empty content"})
+        mime_type = _response_mime_type(response, parsed.path)
+        return data, _filename_from_url(parsed.path, mime_type), mime_type
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 async def read_image_sources(sources: list[ImageSource]) -> list[ImageInput]:
     """读取图片来源：上传文件直接读取，URL 下载后统一返回图片元组。"""
+    if len(sources) > MAX_IMAGE_REFERENCES:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"images supports up to {MAX_IMAGE_REFERENCES} items"},
+        )
     images: list[ImageInput] = []
+    total_bytes = 0
     for source in sources:
         if isinstance(source, tuple):
-            images.append(source)
-            continue
-        if _is_upload(source):
+            image = source
+        elif _is_upload(source):
+            image_buffer = bytearray()
             try:
-                image_data = await source.read()
+                while chunk := await source.read(64 * 1024):
+                    image_buffer.extend(chunk)
+                    if len(image_buffer) > MAX_IMAGE_REFERENCE_BYTES:
+                        raise HTTPException(status_code=400, detail={"error": "image file exceeds 50MB limit"})
             finally:
                 await source.close()
+            image_data = bytes(image_buffer)
             if not image_data:
                 raise HTTPException(status_code=400, detail={"error": "image file is empty"})
-            images.append((image_data, source.filename or "image.png", source.content_type or "image/png"))
-            continue
-        images.append(await run_in_threadpool(_download_image_url, source))
+            image = (image_data, source.filename or "image.png", source.content_type or "image/png")
+        else:
+            image = await run_in_threadpool(_download_image_url, source)
+        if len(image[0]) > MAX_IMAGE_REFERENCE_BYTES:
+            raise HTTPException(status_code=400, detail={"error": "image file exceeds 50MB limit"})
+        total_bytes += len(image[0])
+        if total_bytes > MAX_TOTAL_IMAGE_REFERENCE_BYTES:
+            raise HTTPException(status_code=400, detail={"error": "images exceed 100MB total limit"})
+        images.append(image)
     if not images:
         raise HTTPException(status_code=400, detail={"error": "image file or image_url is required"})
     return images

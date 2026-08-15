@@ -5,6 +5,10 @@ import time
 import unittest
 
 import requests
+import pytest
+
+
+pytestmark = pytest.mark.live
 
 AUTH_KEY = "chatgpt2api"
 BASE_URL = "http://localhost:8000"

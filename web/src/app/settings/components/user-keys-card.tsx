@@ -41,6 +41,7 @@ export function UserKeysCard() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [name, setName] = useState("");
+  const [newKey, setNewKey] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
@@ -72,10 +73,11 @@ export function UserKeysCard() {
   const handleCreate = async () => {
     setIsCreating(true);
     try {
-      const data = await createUserKey(name.trim());
+      const data = await createUserKey(name.trim(), newKey.trim());
       setItems(data.items);
       setRevealedKey(data.key);
       setName("");
+      setNewKey("");
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
     } catch (error) {
@@ -182,7 +184,7 @@ export function UserKeysCard() {
               </div>
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">用户密钥管理</h2>
-                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户只能进入画图页，不能查看设置和号池。</p>
+                <p className="text-sm text-stone-500">为普通用户创建专用密钥；普通用户可进入画图和开发调试页面，但不能查看设置和号池。</p>
               </div>
             </div>
             <Button className="h-9 rounded-xl bg-stone-950 px-4 text-white hover:bg-stone-800" onClick={() => setIsDialogOpen(true)}>
@@ -287,7 +289,7 @@ export function UserKeysCard() {
           <DialogHeader className="gap-2">
             <DialogTitle>创建用户密钥</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              可选填写一个备注名称，方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。
+              可选填写备注名称和登录密钥；不填写登录密钥时，系统会自动生成一条只能查看一次的随机密钥。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -298,6 +300,17 @@ export function UserKeysCard() {
               placeholder="例如：设计同学 A、运营临时账号"
               className="h-11 rounded-xl border-stone-200 bg-white"
             />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-stone-700">登录密钥 / 密码（可选）</label>
+            <Input
+              type="password"
+              value={newKey}
+              onChange={(event) => setNewKey(event.target.value)}
+              placeholder="例如：A1；留空则自动生成"
+              className="h-11 rounded-xl border-stone-200 bg-white font-mono"
+            />
+            <p className="text-xs leading-5 text-stone-500">登录时输入这里设置的密钥。名称只是备注，不是登录密码。</p>
           </div>
           <DialogFooter>
             <Button

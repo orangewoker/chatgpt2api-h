@@ -82,25 +82,27 @@ def response_image_tool(body: dict[str, Any]) -> dict[str, object]:
     return {}
 
 
-def extract_response_image(input_value: object) -> tuple[bytes, str] | None:
+def extract_response_images(input_value: object) -> list[tuple[bytes, str]]:
     if isinstance(input_value, dict):
         if str(input_value.get("type") or "").strip() == "input_image":
-            images = extract_image_from_message_content([input_value])
-            return images[0] if images else None
-        images = extract_image_from_message_content(input_value.get("content"))
-        return images[0] if images else None
+            return extract_image_from_message_content([input_value])
+        return extract_image_from_message_content(input_value.get("content"))
     if not isinstance(input_value, list):
-        return None
-    for item in reversed(input_value):
+        return []
+    collected: list[tuple[bytes, str]] = []
+    for item in input_value:
         if isinstance(item, dict):
             if str(item.get("type") or "").strip() == "input_image":
-                images = extract_image_from_message_content([item])
-                if images:
-                    return images[0]
-            images = extract_image_from_message_content(item.get("content"))
-            if images:
-                return images[0]
-    return None
+                collected.extend(extract_image_from_message_content([item]))
+            else:
+                collected.extend(extract_image_from_message_content(item.get("content")))
+    return collected
+
+
+def extract_response_image(input_value: object) -> tuple[bytes, str] | None:
+    """Backward-compatible single-image helper for callers outside this module."""
+    images = extract_response_images(input_value)
+    return images[-1] if images else None
 
 
 def _input_image_parts(input_value: object) -> list[dict[str, Any]]:
@@ -427,18 +429,18 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
     if not prompt:
         raise HTTPException(status_code=400, detail={"error": "input text is required"})
     model = str(body.get("model") or "gpt-image-2").strip() or "gpt-image-2"
-    image_info = extract_response_image(body.get("input"))
-    if image_info:
-        image_data, mime_type = image_info
-        images = encode_images([(image_data, "image.png", mime_type)])
-    else:
-        images = None
+    image_inputs = extract_response_images(body.get("input"))
+    images = encode_images([
+        (image_data, f"image_{index}.png", mime_type)
+        for index, (image_data, mime_type) in enumerate(image_inputs, start=1)
+    ]) or None
     input_image_tokens = count_image_content_tokens(_input_image_parts(body.get("input")), model)
     tool = response_image_tool(body)
     image_outputs = stream_image_outputs_with_pool(ConversationRequest(
         prompt=prompt,
         model=model,
         size=tool.get("size"),
+        ratio=str(tool.get("ratio") or "") or None,
         quality=str(tool.get("quality") or "auto"),
         response_format="b64_json",
         images=images,

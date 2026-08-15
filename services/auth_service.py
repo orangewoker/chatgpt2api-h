@@ -147,17 +147,22 @@ class AuthService:
             raise ValueError("这个名称已经在使用中了，换一个更容易区分的名称吧")
         return candidate
 
-    def create_key(self, *, role: AuthRole, name: str = "") -> tuple[dict[str, object], str]:
+    def create_key(self, *, role: AuthRole, name: str = "", key: str = "") -> tuple[dict[str, object], str]:
         with self._lock:
             self._reload_locked()
             normalized_name = self._build_name_locked(name, role=role)
-            while True:
-                raw_key = f"sk-{secrets.token_urlsafe(24)}"
-                try:
-                    key_hash = self._build_key_hash_locked(raw_key)
-                    break
-                except ValueError:
-                    continue
+            requested_key = self._clean(key)
+            if requested_key:
+                raw_key = requested_key
+                key_hash = self._build_key_hash_locked(raw_key)
+            else:
+                while True:
+                    raw_key = f"sk-{secrets.token_urlsafe(24)}"
+                    try:
+                        key_hash = self._build_key_hash_locked(raw_key)
+                        break
+                    except ValueError:
+                        continue
             item = {
                 "id": uuid.uuid4().hex[:12],
                 "name": normalized_name,

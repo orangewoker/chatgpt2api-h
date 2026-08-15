@@ -26,7 +26,8 @@ WEB_IMAGE_MODELS = {
 WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
     r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
 )
-BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2"}
+AGNES_IMAGE_MODEL = "agnes-image-2.1-flash"
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2", AGNES_IMAGE_MODEL}
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 PREFIXED_CODEX_IMAGE_MODELS = {

@@ -6,6 +6,10 @@ import unittest
 from pathlib import Path
 
 import requests
+import pytest
+
+
+pytestmark = pytest.mark.live
 
 from test.utils import save_image
 from utils.log import logger

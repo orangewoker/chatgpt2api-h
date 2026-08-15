@@ -4,7 +4,7 @@ from typing import Any
 
 from services.account_service import account_service
 from services.model_service import model_catalog_service
-from utils.helper import CODEX_IMAGE_MODEL, WEB_IMAGE_MODELS
+from utils.helper import AGNES_IMAGE_MODEL, CODEX_IMAGE_MODEL, WEB_IMAGE_MODELS
 
 
 def list_models() -> dict[str, Any]:
@@ -15,29 +15,34 @@ def list_models() -> dict[str, Any]:
     seen = {str(item.get("id") or "").strip() for item in data if isinstance(item, dict)}
     dynamic_models: set[str] = set()
     accounts = account_service.list_accounts()
-    active_accounts = [
+    chatgpt_image_accounts = [
         account
         for account in accounts
-        if isinstance(account, dict) and account.get("status") not in {"禁用", "异常"}
+        if isinstance(account, dict)
+           and account_service.account_provider(account) == "chatgpt"
+           and account_service._is_image_account_available(account)
     ]
-    web_image_accounts = [
+    agnes_image_accounts = [
         account
-        for account in active_accounts
-        # Web accounts can be imported by token, password, refresh-token and
-        # other login flows. Only Codex-source accounts are incompatible with
-        # the ChatGPT Web image path; treating "password" as a separate product
-        # source accidentally hid all Web image models in v1.8.2.
-        if account_service._normalize_source_type(account.get("source_type")) != "codex"
+        for account in accounts
+        if isinstance(account, dict)
+           and account_service.account_provider(account) == "agnes"
+           and account_service._is_image_account_available(account)
     ]
     codex_types = {
         normalized
-        for account in active_accounts
-        if account_service._normalize_source_type(account.get("source_type")) == "codex"
+        for account in accounts
+        if isinstance(account, dict)
+           and account_service.account_provider(account) == "chatgpt"
+           and account_service._is_image_account_available(account)
+           and account_service._normalize_source_type(account.get("source_type")) == "codex"
            and (normalized := account_service._normalize_account_type(account.get("type")))
     }
 
-    if web_image_accounts:
+    if chatgpt_image_accounts:
         dynamic_models.update(WEB_IMAGE_MODELS)
+    if agnes_image_accounts:
+        dynamic_models.add(AGNES_IMAGE_MODEL)
     if codex_types & {"Plus", "Team", "Pro"}:
         dynamic_models.add(CODEX_IMAGE_MODEL)
     if "Plus" in codex_types:

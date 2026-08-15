@@ -11,7 +11,7 @@
     "info",
     "warning"
   ],
-  "proxy": "",
+  "proxy": "http://192.168.1.41:20171",
   "proxy_runtime": {
     "enabled": false,
     "egress_mode": "single_proxy",

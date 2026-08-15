@@ -5,7 +5,7 @@ import { ThemeScript } from "@/components/theme-script";
 import { TopNav } from "@/components/top-nav";
 
 export const metadata: Metadata = {
-  title: "ChatGPT 号池管理",
+  title: "环途生图服务",
   description: "ChatGPT account pool management dashboard",
 };
 

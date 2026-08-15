@@ -30,6 +30,7 @@ docker-compose-local.yml
 git_cache/
 
 # 调试/测试输出目录
+.pytest_cache/
 loginwithpassword_*/
 logwithemailverifycode_*/
 test_batch_output/

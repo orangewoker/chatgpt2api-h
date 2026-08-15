@@ -68,6 +68,23 @@ class ImageTaskServiceTests(unittest.TestCase):
             self.assertEqual(task["data"][0]["url"], "http://example.test/image.png")
             self.assertEqual(calls, 1)
 
+    def test_task_persists_and_returns_ratio(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = self.make_service(Path(tmp_dir) / "image_tasks.json")
+            submitted = service.submit_generation(
+                OWNER,
+                client_task_id="agnes-ratio",
+                prompt="panorama",
+                model="agnes-image-2.1-flash",
+                size="3K",
+                ratio="21:9",
+            )
+
+            self.assertEqual(submitted["ratio"], "21:9")
+            task = wait_for_task(service, OWNER, "agnes-ratio", "success")
+            self.assertEqual(task["size"], "3K")
+            self.assertEqual(task["ratio"], "21:9")
+
     def test_different_owner_cannot_query_task(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             service = self.make_service(Path(tmp_dir) / "image_tasks.json")
