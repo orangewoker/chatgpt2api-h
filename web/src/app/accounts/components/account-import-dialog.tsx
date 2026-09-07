@@ -62,6 +62,37 @@ function splitTokens(value: string) {
     .filter(Boolean);
 }
 
+function parseGeminiCookieInputs(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const isCookieArray = parsed.some(
+          (item) => item && typeof item === "object" && "name" in item && "value" in item,
+        );
+        if (isCookieArray) {
+          return [JSON.stringify(parsed)];
+        }
+        return parsed
+          .map((item) => (typeof item === "string" ? item.trim() : JSON.stringify(item)))
+          .filter(Boolean);
+      }
+      if (typeof parsed === "object" && parsed !== null) {
+        return [JSON.stringify(parsed)];
+      }
+    } catch {
+      // fallback to line splitting
+    }
+  }
+
+  return splitTokens(value);
+}
+
 function getSessionAccessToken(value: unknown) {
   const token = (value as { accessToken?: unknown })?.accessToken;
   return typeof token === "string" ? token.trim() : "";
@@ -277,7 +308,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const handleImportGeminiCookies = async () => {
-    const cookies = splitTokens(geminiCookieInput);
+    const cookies = parseGeminiCookieInputs(geminiCookieInput);
     const proxy = geminiProxyInput.trim() || undefined;
     const accounts: AccountImportPayload[] = cookies.map((cookie, index) => ({
       access_token: cookie,
@@ -522,7 +553,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     }
 
     if (method === "gemini") {
-      const cookieCount = splitTokens(geminiCookieInput).length;
+      const cookieCount = parseGeminiCookieInputs(geminiCookieInput).length;
       return (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
@@ -534,7 +565,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               <ArrowLeft className="size-4" />
               返回导入方式
             </button>
-            <span className="text-xs text-stone-400">当前识别 {cookieCount} 个 Cookie</span>
+            <span className="text-xs text-stone-400">当前识别 {cookieCount} 个账号凭据</span>
           </div>
           <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600 space-y-1">
             <div className="font-medium text-stone-800">获取说明</div>
@@ -990,7 +1021,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               <Button
                 className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
                 onClick={() => void handleImportGeminiCookies()}
-                disabled={footerDisabled || splitTokens(geminiCookieInput).length === 0}
+                disabled={footerDisabled || parseGeminiCookieInputs(geminiCookieInput).length === 0}
               >
                 {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
                 导入 Gemini 账号
