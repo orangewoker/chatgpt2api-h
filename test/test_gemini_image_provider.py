@@ -10,7 +10,9 @@ from services.account_service import account_service
 from services.image_providers.gemini_web import (
     GeminiWebImageError,
     GeminiWebImageProvider,
+    _determine_aspect_ratio,
     _extract_google_image_urls,
+    _high_res_image_url,
     _parse_cookie_input,
 )
 from services.protocol.conversation import (
@@ -21,6 +23,22 @@ from services.protocol.conversation import (
 )
 from utils.gemini_watermark import remove_gemini_sparkle
 from utils.helper import is_gemini_image_model, GEMINI_IMAGE_MODEL
+
+
+def test_determine_aspect_ratio():
+    assert _determine_aspect_ratio("1024x1024", None) == "1:1"
+    assert _determine_aspect_ratio("1792x1024", None) == "16:9"
+    assert _determine_aspect_ratio("1024x1792", None) == "9:16"
+    assert _determine_aspect_ratio("1536x1024", None) == "3:2"
+    assert _determine_aspect_ratio("1024x1536", None) == "2:3"
+    assert _determine_aspect_ratio("1024x1024", "16:9") == "16:9"
+
+
+def test_high_res_image_url():
+    raw_url = "https://lh3.googleusercontent.com/gg-dl/AF1QipNabc12345"
+    assert _high_res_image_url(raw_url) == "https://lh3.googleusercontent.com/gg-dl/AF1QipNabc12345=s0"
+    preview_url = "https://lh3.googleusercontent.com/gg-dl/AF1QipNabc12345=s512"
+    assert _high_res_image_url(preview_url) == "https://lh3.googleusercontent.com/gg-dl/AF1QipNabc12345=s0"
 
 
 def test_gemini_model_detection():

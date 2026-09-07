@@ -94,6 +94,40 @@ def _parse_cookie_input(token: str, account: dict | None = None) -> tuple[dict[s
     return cookies, snlm0e
 
 
+def _determine_aspect_ratio(size: str | None, ratio: str | None) -> str | None:
+    """Map size / ratio to Gemini-compatible aspect ratio string."""
+    if ratio and ratio not in {"auto", "default", ""}:
+        return ratio
+    if not size:
+        return None
+    try:
+        parts = size.lower().split("x")
+        if len(parts) == 2:
+            w, h = int(parts[0]), int(parts[1])
+            if w == h:
+                return "1:1"
+            aspect = w / h
+            ratios = [
+                ("1:1", 1.0),
+                ("4:3", 4 / 3),
+                ("3:4", 3 / 4),
+                ("3:2", 3 / 2),
+                ("2:3", 2 / 3),
+                ("16:9", 16 / 9),
+                ("9:16", 9 / 16),
+            ]
+            return min(ratios, key=lambda r: abs(aspect - r[1]))[0]
+    except Exception:
+        pass
+    return None
+
+
+def _high_res_image_url(url: str) -> str:
+    """Ensure Google LH3 image URL requests the original full master resolution (=s0)."""
+    clean_url = re.sub(r"=(?:s|w|h)\d+.*$", "", url)
+    return clean_url + "=s0"
+
+
 def _extract_google_image_urls(text: str) -> list[str]:
     """Find generated Google image URLs in response payload."""
     # Matches URLs like https://lh3.googleusercontent.com/gg-dl/... or https://lh3.googleusercontent.com/ggms/...
@@ -277,8 +311,9 @@ class GeminiWebImageProvider:
         at_token = self._ensure_snlm0e()
 
         # Build prompt with ratio & generation intent
-        ratio_hint = f" (aspect ratio {ratio})" if ratio and ratio != "auto" else ""
-        full_prompt = f"Please generate an image: {cleaned_prompt}{ratio_hint}"
+        aspect_ratio = _determine_aspect_ratio(size, ratio)
+        ratio_hint = f" (aspect ratio {aspect_ratio})" if aspect_ratio else ""
+        full_prompt = f"Please generate a high-resolution 4K quality image: {cleaned_prompt}{ratio_hint}"
 
         # Construct Google Batchexecute RPC payload
         req_payload = [
@@ -354,13 +389,21 @@ class GeminiWebImageProvider:
                 code="no_image_generated",
             )
 
-        # Download the generated image and remove watermark
+        # Try high-resolution master URL (=s0) first, then fall back to original URL
+        download_candidates: list[str] = []
+        for u in image_urls:
+            hr_u = _high_res_image_url(u)
+            if hr_u not in download_candidates:
+                download_candidates.append(hr_u)
+            if u not in download_candidates:
+                download_candidates.append(u)
+
         raw_bytes: bytes | None = None
         last_download_err: Exception | None = None
-        for target_url in image_urls:
+        for target_url in download_candidates:
             try:
                 img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS)
-                if img_resp.status_code == 200 and len(img_resp.content) > 512:
+                if img_resp.status_code == 200 and len(img_resp.content) > 1024:
                     raw_bytes = img_resp.content
                     break
                 else:
@@ -379,6 +422,37 @@ class GeminiWebImageProvider:
 
         # Remove Sparkle star watermark
         clean_bytes = remove_gemini_sparkle(raw_bytes)
+
+        # Ensure high resolution (>= 1K) and support explicit 2K/4K scaling
+        try:
+            im = Image.open(BytesIO(clean_bytes))
+            target_w, target_h = None, None
+            if size and "x" in size:
+                try:
+                    parts = size.lower().split("x")
+                    target_w, target_h = int(parts[0]), int(parts[1])
+                except Exception:
+                    pass
+
+            max_dim = max(im.width, im.height)
+            if target_w and target_h and (target_w >= 1920 or target_h >= 1920):
+                # 2K / 4K upscale if explicitly requested
+                im = im.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                buf = BytesIO()
+                im.save(buf, format="JPEG", quality=95)
+                clean_bytes = buf.getvalue()
+            elif max_dim < 1024:
+                # Guarantee minimum 1K resolution (never deliver a 512px thumbnail)
+                scale = 1024.0 / max_dim
+                new_w = int(round(im.width * scale))
+                new_h = int(round(im.height * scale))
+                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                buf = BytesIO()
+                im.save(buf, format="JPEG", quality=95)
+                clean_bytes = buf.getvalue()
+        except Exception as exc:
+            logger.warning(f"Failed to post-process Gemini image resolution: {exc}")
+
         b64_data = base64.b64encode(clean_bytes).decode("utf-8")
 
         return {
