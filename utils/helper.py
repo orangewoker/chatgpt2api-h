@@ -27,7 +27,15 @@ WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
     r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
 )
 AGNES_IMAGE_MODEL = "agnes-image-2.1-flash"
-BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2", AGNES_IMAGE_MODEL}
+GEMINI_IMAGE_MODEL = "gemini-image-2.5-flash"
+GEMINI_IMAGE_MODELS = {
+    GEMINI_IMAGE_MODEL,
+    "imagen-3",
+    "imagen-3.0-generate-002",
+    "gemini-2.0-flash-image",
+    "gemini-image",
+}
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2", AGNES_IMAGE_MODEL, *GEMINI_IMAGE_MODELS}
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 PREFIXED_CODEX_IMAGE_MODELS = {
@@ -147,6 +155,19 @@ def is_web_image_model(model: object) -> bool:
 def is_codex_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
     return base_model == CODEX_IMAGE_MODEL
+
+
+def is_agnes_image_model(model: object) -> bool:
+    _, base_model = split_image_model(model)
+    return base_model == AGNES_IMAGE_MODEL
+
+
+def is_gemini_image_model(model: object) -> bool:
+    _, base_model = split_image_model(model)
+    if base_model in GEMINI_IMAGE_MODELS:
+        return True
+    name = str(model or "").strip().lower()
+    return "gemini-image" in name or "imagen-3" in name or "imagen" in name
 
 
 def is_image_chat_request(body: dict[str, object]) -> bool:

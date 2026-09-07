@@ -24,9 +24,11 @@ def normalize_proxy_url(url: str) -> str:
 
     SOCKS proxies should use remote-DNS resolution by default, so generic
     ``socks://`` and ``socks5://`` inputs are upgraded to ``socks5h://``.
+    VLESS/VMess protocols are resolved via ProxyNodeManager.
     HTTP/HTTPS/socks5h inputs are otherwise left untouched except trimming.
     """
-    candidate = str(url or "").strip()
+    from services.proxy_node_manager import ProxyNodeManager
+    candidate = ProxyNodeManager.resolve_account_proxy(str(url or "").strip())
     if candidate and "://" not in candidate:
         candidate = _colon_proxy_to_url(candidate)
     lowered = candidate.lower()

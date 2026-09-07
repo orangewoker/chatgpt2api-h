@@ -65,6 +65,25 @@ const qualityOptions = [
 ];
 const agnesTierOptions = ["1k", "2k", "3k", "4k"];
 const agnesRatioOptions = ["auto", "1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"];
+const agnesRatioOptionsWithIcons = [
+  { ratio: "1:1", label: "1:1", icon: Square },
+  { ratio: "3:4", label: "3:4", icon: RectangleVertical },
+  { ratio: "4:3", label: "4:3", icon: RectangleHorizontal },
+  { ratio: "16:9", label: "16:9", icon: RectangleHorizontal },
+  { ratio: "9:16", label: "9:16", icon: RectangleVertical },
+  { ratio: "2:3", label: "2:3", icon: RectangleVertical },
+  { ratio: "3:2", label: "3:2", icon: RectangleHorizontal },
+  { ratio: "21:9", label: "21:9", icon: RectangleHorizontal },
+  { ratio: "auto", label: "auto", icon: null },
+];
+const geminiRatioOptions = [
+  { ratio: "1:1", label: "1:1", icon: Square },
+  { ratio: "3:4", label: "3:4", icon: RectangleVertical },
+  { ratio: "4:3", label: "4:3", icon: RectangleHorizontal },
+  { ratio: "9:16", label: "9:16", icon: RectangleVertical },
+  { ratio: "16:9", label: "16:9", icon: RectangleHorizontal },
+  { ratio: "auto", label: "auto", icon: null },
+];
 const aspectOptions = [
   { ratio: "1:1", tier: "1k", width: "1024", height: "1024", label: "1:1", icon: Square },
   { ratio: "2:3", tier: "1k", width: "1024", height: "1536", label: "2:3", icon: RectangleVertical },
@@ -81,6 +100,13 @@ const aspectOptions = [
   { ratio: "auto", tier: "auto", width: "1024", height: "1024", label: "auto", icon: null },
 ];
 const countOptions = Array.from({ length: 10 }, (_, index) => String(index + 1));
+
+const isAgnesModelName = (model: string) => model.toLowerCase() === "agnes-image-2.1-flash";
+const isGeminiModelName = (model: string) => {
+  const lower = model.toLowerCase();
+  return lower.startsWith("gemini") || lower.startsWith("imagen");
+};
+const isChatGPTModelName = (model: string) => !isAgnesModelName(model) && !isGeminiModelName(model);
 
 export function ImageComposer({
   prompt,
@@ -125,13 +151,36 @@ export function ImageComposer({
     () => imageModels.map((model) => ({ value: model, label: model })),
     [imageModels],
   );
-  const isAgnesModel = imageModel.toLowerCase() === "agnes-image-2.1-flash";
+
+  const hasChatGPT = useMemo(() => imageModels.some(isChatGPTModelName), [imageModels]);
+  const hasAgnes = useMemo(() => imageModels.some(isAgnesModelName), [imageModels]);
+  const hasGemini = useMemo(() => imageModels.some(isGeminiModelName), [imageModels]);
+  const activeChannelCount = (hasChatGPT ? 1 : 0) + (hasAgnes ? 1 : 0) + (hasGemini ? 1 : 0);
+  const isMultiChannel = activeChannelCount > 1;
+
+  const isAgnesModel = isAgnesModelName(imageModel);
+  const isGeminiModel = isGeminiModelName(imageModel);
+  const isChatGPTModel = isChatGPTModelName(imageModel);
+
   const agnesTier = agnesTierOptions.includes(imageTier) ? imageTier : "1k";
-  const qualityLabel = isAgnesModel
-    ? "上游自动"
+  const qualityLabel = (isAgnesModel || isGeminiModel)
+    ? "自动"
     : qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
-  const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${isAgnesModel ? agnesTier : imageTier})`;
-  const imageSizeLabel = `双渠道 · ${qualityLabel} · ${ratioLabel} · 每路 ${imageCount || 1} 张`;
+  const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}${isAgnesModel ? `(${agnesTier.toUpperCase()})` : (imageTier && imageTier !== "1k" && imageTier !== "auto" ? `(${imageTier})` : "")}`;
+
+  const imageSizeLabel = useMemo(() => {
+    if (isMultiChannel) {
+      return `${activeChannelCount}渠道 · ${qualityLabel} · ${ratioLabel} · 每路 ${imageCount || 1} 张`;
+    }
+    if (hasAgnes && !hasChatGPT && !hasGemini) {
+      return `Agnes · ${imageRatio === "auto" ? "auto" : `${imageRatio}(${agnesTier.toUpperCase()})`} · ${imageCount || 1} 张`;
+    }
+    if (hasGemini && !hasChatGPT && !hasAgnes) {
+      return `Gemini · ${imageRatio} · ${imageCount || 1} 张`;
+    }
+    return `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张`;
+  }, [isMultiChannel, activeChannelCount, qualityLabel, ratioLabel, imageCount, hasAgnes, hasChatGPT, hasGemini, imageRatio, agnesTier]);
+
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
   const supportsHighResolution = ["codex", "agnes-image"].some((value) =>
     imageModel.toLowerCase().includes(value),
@@ -362,191 +411,376 @@ export function ImageComposer({
                           width: "min(460px, calc(100vw - 2rem))",
                         }}
                       >
-                        <h3 className="mb-3 text-base font-semibold text-stone-950">图像设置</h3>
-                        <div className="mb-3 rounded-2xl bg-stone-100 p-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">并行生图渠道</div>
-                          <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
-                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">ChatGPT · gpt-image-2</span>
-                            <span className="rounded-full bg-violet-100 px-2.5 py-1 text-violet-700">Agnes · image-2.1-flash</span>
-                          </div>
-                          <p className="mt-2 text-xs leading-5 text-stone-500">每次提交会同时调用两路；生成数量按每个渠道分别计算。</p>
-                        </div>
-                        <div className="mb-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">ChatGPT 模型</div>
-                          <Select
-                            value={imageModel}
-                            onValueChange={(value) => {
-                              onImageModelChange(value as ImageModel);
-                            }}
-                          >
-                            <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white text-sm shadow-none">
-                              <div className="flex min-w-0 items-center gap-2">
-                                <img
-                                  src="/openai.svg"
-                                  alt=""
-                                  aria-hidden="true"
-                                  className="size-4 shrink-0 text-stone-700"
-                                />
-                                <span className="truncate">{selectedModelLabel}</span>
-                              </div>
-                            </SelectTrigger>
-                            <SelectContent className="z-[120]">
-                              {modelOptions.map((option) => (
-                                <SelectItem
-                                  key={option.value}
-                                  value={option.value}
-                                  className="pl-10"
-                                  style={{
-                                    backgroundImage: "url('/openai.svg')",
-                                    backgroundRepeat: "no-repeat",
-                                    backgroundPosition: "12px center",
-                                    backgroundSize: "16px 16px",
-                                  }}
-                                >
-                                  {option.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="mb-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">质量</div>
-                          {isAgnesModel ? (
-                            <div className="rounded-xl bg-stone-100 px-3 py-2 text-sm text-stone-600">
-                              Agnes 质量由上游自动决定。
-                            </div>
+                        {/* 标题栏与当前激活类型标识 */}
+                        <div className="mb-3 flex items-center justify-between">
+                          <h3 className="text-base font-semibold text-stone-950">
+                            {isMultiChannel
+                              ? "多渠道图像设置"
+                              : hasAgnes && !hasChatGPT && !hasGemini
+                                ? "Agnes 图像设置"
+                                : hasGemini && !hasChatGPT && !hasAgnes
+                                  ? "Gemini 图像设置"
+                                  : "图像设置"}
+                          </h3>
+                          {isMultiChannel ? (
+                            <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-[11px] font-medium text-stone-600">
+                              {activeChannelCount} 渠道并行
+                            </span>
+                          ) : hasAgnes && !hasChatGPT && !hasGemini ? (
+                            <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[11px] font-medium text-violet-700">
+                              Agnes Flash
+                            </span>
+                          ) : hasGemini && !hasChatGPT && !hasAgnes ? (
+                            <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-[11px] font-medium text-sky-700">
+                              Gemini
+                            </span>
                           ) : (
-                            <div className="grid grid-cols-4 gap-2">
-                            {qualityOptions.map((option) => {
-                              const active = option.value === imageQuality;
-                              return (
-                                <button
-                                  key={option.value}
-                                  type="button"
-                                  className={cn(
-                                    "h-9 cursor-pointer rounded-full border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
-                                    active && "border-stone-950 bg-white font-medium text-stone-950",
-                                  )}
-                                  onClick={() => onImageQualityChange(option.value)}
-                                >
-                                  {option.label}
-                                </button>
-                              );
-                            })}
-                            </div>
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700">
+                              ChatGPT
+                            </span>
                           )}
                         </div>
-                        <div className="mb-3">
-                          <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
-                            尺寸 <Info className="size-3.5 text-stone-400" />
+
+                        {/* 多渠道并行提示横幅（仅在多渠道激活时显示） */}
+                        {isMultiChannel && (
+                          <div className="mb-3 rounded-2xl bg-stone-100 p-3">
+                            <div className="mb-2 text-sm font-medium text-stone-900">并行生图渠道</div>
+                            <div className="flex flex-wrap gap-1.5 text-[11px] font-medium">
+                              {hasChatGPT && (
+                                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700">
+                                  ChatGPT · {imageModels.find(isChatGPTModelName) || "gpt-image-2"}
+                                </span>
+                              )}
+                              {hasAgnes && (
+                                <span className="rounded-full bg-violet-100 px-2.5 py-1 text-violet-700">
+                                  Agnes · image-2.1-flash
+                                </span>
+                              )}
+                              {hasGemini && (
+                                <span className="rounded-full bg-sky-100 px-2.5 py-1 text-sky-700">
+                                  Gemini · {imageModels.find(isGeminiModelName) || "image-2.5-flash"}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-2 text-xs leading-5 text-stone-500">
+                              每次提交会同时调用已配置的 {activeChannelCount} 路渠道并发生成；生成数量按每个渠道分别计算。
+                            </p>
                           </div>
-                          {isAgnesModel ? (
+                        )}
+
+                        {/* ChatGPT 模型选择器 */}
+                        {hasChatGPT && (
+                          <div className="mb-3">
+                            <div className="mb-2 text-sm font-medium text-stone-900">ChatGPT 模型</div>
                             <Select
-                              value={agnesTier}
-                              onValueChange={onImageTierChange}
-                            >
-                              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {agnesTierOptions.map((tier) => (
-                                  <SelectItem key={tier} value={tier}>{tier.toUpperCase()}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
-                            <div className="flex items-center rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">
-                              <span className="mr-2 text-stone-500">W</span>
-                              <Input
-                                type="number"
-                                inputMode="numeric"
-                                min="1"
-                                value={imageWidth}
-                                onChange={(event) => onImageWidthChange(event.target.value)}
-                                className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
-                              />
-                            </div>
-                            <span className="text-stone-400">×</span>
-                            <div className="flex items-center rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">
-                              <span className="mr-2 text-stone-500">H</span>
-                              <Input
-                                type="number"
-                                inputMode="numeric"
-                                min="1"
-                                value={imageHeight}
-                                onChange={(event) => onImageHeightChange(event.target.value)}
-                                className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
-                              />
-                            </div>
-                            </div>
-                          )}
-                        </div>
-                        <div className="mb-3">
-                          <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
-                            宽高比 <Info className="size-3.5 text-stone-400" />
-                          </div>
-                          {isAgnesModel ? (
-                            <Select
-                              value={agnesRatioOptions.includes(imageRatio) ? imageRatio : "auto"}
-                              onValueChange={(ratio) => {
-                                onImageRatioChange(ratio);
-                                if (!agnesTierOptions.includes(imageTier)) {
-                                  onImageTierChange("1k");
-                                }
+                              value={isChatGPTModel ? imageModel : (imageModels.find(isChatGPTModelName) || "gpt-image-2")}
+                              onValueChange={(value) => {
+                                onImageModelChange(value as ImageModel);
                               }}
                             >
-                              <SelectTrigger className="h-10 w-full rounded-xl border-stone-200 bg-white">
-                                <SelectValue />
+                              <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white text-sm shadow-none">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <img
+                                    src="/openai.svg"
+                                    alt=""
+                                    aria-hidden="true"
+                                    className="size-4 shrink-0 text-stone-700"
+                                  />
+                                  <span className="truncate">
+                                    {modelOptions.find((opt) => opt.value === imageModel && isChatGPTModelName(opt.value))?.label ||
+                                      imageModels.find(isChatGPTModelName) ||
+                                      "gpt-image-2"}
+                                  </span>
+                                </div>
                               </SelectTrigger>
-                              <SelectContent>
-                                {agnesRatioOptions.map((ratio) => (
-                                  <SelectItem key={ratio} value={ratio}>{ratio}</SelectItem>
-                                ))}
+                              <SelectContent className="z-[120]">
+                                {modelOptions
+                                  .filter((option) => isChatGPTModelName(option.value))
+                                  .map((option) => (
+                                    <SelectItem
+                                      key={option.value}
+                                      value={option.value}
+                                      className="pl-10"
+                                      style={{
+                                        backgroundImage: "url('/openai.svg')",
+                                        backgroundRepeat: "no-repeat",
+                                        backgroundPosition: "12px center",
+                                        backgroundSize: "16px 16px",
+                                      }}
+                                    >
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
                               </SelectContent>
                             </Select>
-                          ) : (
-                            <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
-                            {aspectOptions.map((option) => {
-                              const active = option.ratio === imageRatio && option.tier === imageTier && option.width === imageWidth && option.height === imageHeight;
-                              const Icon = option.icon;
-                              const disabled = !supportsHighResolution && (option.tier === "2k" || option.tier === "4k");
-                              return (
-                                <button
-                                  key={`${option.ratio}-${option.tier}-${option.label}`}
-                                  type="button"
-                                  disabled={disabled}
-                                  className={cn(
-                                    "flex h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
-                                    active && "border-stone-950",
-                                    disabled && "cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 hover:border-stone-100 hover:bg-stone-50",
-                                  )}
-                                  onClick={() => {
-                                    if (disabled) {
-                                      return;
-                                    }
-                                    onImageRatioChange(option.ratio);
-                                    onImageTierChange(option.tier);
-                                    onImageWidthChange(option.width);
-                                    onImageHeightChange(option.height);
-                                  }}
-                                >
-                                  {Icon ? (
-                                    <>
-                                      <Icon className="size-3.5 stroke-[1.8]" />
-                                      <span>{option.label}</span>
-                                    </>
-                                  ) : (
-                                    <span>{option.label}</span>
-                                  )}
-                                </button>
-                              );
-                            })}
+                          </div>
+                        )}
+
+                        {/* Gemini 模型选择器（多模型时可选） */}
+                        {hasGemini && !hasChatGPT && !hasAgnes && modelOptions.filter((opt) => isGeminiModelName(opt.value)).length > 1 && (
+                          <div className="mb-3">
+                            <div className="mb-2 text-sm font-medium text-stone-900">Gemini 模型</div>
+                            <Select
+                              value={imageModel}
+                              onValueChange={(value) => {
+                                onImageModelChange(value as ImageModel);
+                              }}
+                            >
+                              <SelectTrigger className="h-10 rounded-xl border-stone-200 bg-white text-sm shadow-none">
+                                <span className="truncate">{selectedModelLabel}</span>
+                              </SelectTrigger>
+                              <SelectContent className="z-[120]">
+                                {modelOptions
+                                  .filter((option) => isGeminiModelName(option.value))
+                                  .map((option) => (
+                                    <SelectItem key={option.value} value={option.value}>
+                                      {option.label}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+
+                        {/* 质量选择器（仅 ChatGPT 渠道生效） */}
+                        {hasChatGPT && (
+                          <div className="mb-3">
+                            <div className="mb-2 text-sm font-medium text-stone-900">质量</div>
+                            <div className="grid grid-cols-4 gap-2">
+                              {qualityOptions.map((option) => {
+                                const active = option.value === imageQuality;
+                                return (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className={cn(
+                                      "h-9 cursor-pointer rounded-full border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                      active && "border-stone-950 bg-white font-medium text-stone-950",
+                                    )}
+                                    onClick={() => onImageQualityChange(option.value)}
+                                  >
+                                    {option.label}
+                                  </button>
+                                );
+                              })}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
+
+                        {/* Agnes 专用布局：分辨率档位与宽高比 */}
+                        {hasAgnes && !hasChatGPT && !hasGemini && (
+                          <>
+                            <div className="mb-3">
+                              <div className="mb-2 text-sm font-medium text-stone-900">分辨率档位</div>
+                              <div className="grid grid-cols-4 gap-2">
+                                {agnesTierOptions.map((tier) => {
+                                  const active = agnesTier === tier;
+                                  return (
+                                    <button
+                                      key={tier}
+                                      type="button"
+                                      className={cn(
+                                        "h-9 cursor-pointer rounded-xl border border-stone-200 bg-white text-sm font-medium text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                        active && "border-stone-950 bg-stone-950 font-semibold text-white hover:bg-stone-900",
+                                      )}
+                                      onClick={() => onImageTierChange(tier)}
+                                    >
+                                      {tier.toUpperCase()}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="mb-3">
+                              <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
+                                宽高比 <Info className="size-3.5 text-stone-400" />
+                              </div>
+                              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                                {agnesRatioOptionsWithIcons.map((opt) => {
+                                  const active =
+                                    imageRatio === opt.ratio ||
+                                    (opt.ratio === "auto" && (!imageRatio || imageRatio === "auto"));
+                                  const Icon = opt.icon;
+                                  return (
+                                    <button
+                                      key={opt.ratio}
+                                      type="button"
+                                      className={cn(
+                                        "flex h-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-xs text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                        active && "border-stone-950 bg-stone-50 font-semibold text-stone-950 ring-1 ring-stone-950",
+                                      )}
+                                      onClick={() => {
+                                        onImageRatioChange(opt.ratio);
+                                        if (!agnesTierOptions.includes(imageTier)) {
+                                          onImageTierChange("1k");
+                                        }
+                                      }}
+                                    >
+                                      {Icon ? <Icon className="size-3.5 stroke-[1.8]" /> : null}
+                                      <span>{opt.label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {/* Gemini 专用布局：宽高比 */}
+                        {hasGemini && !hasChatGPT && !hasAgnes && (
+                          <div className="mb-3">
+                            <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
+                              宽高比 <Info className="size-3.5 text-stone-400" />
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                              {geminiRatioOptions.map((opt) => {
+                                const active =
+                                  imageRatio === opt.ratio ||
+                                  (opt.ratio === "auto" && (!imageRatio || imageRatio === "auto"));
+                                const Icon = opt.icon;
+                                return (
+                                  <button
+                                    key={opt.ratio}
+                                    type="button"
+                                    className={cn(
+                                      "flex h-[52px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-xs text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                      active && "border-stone-950 bg-stone-50 font-semibold text-stone-950 ring-1 ring-stone-950",
+                                    )}
+                                    onClick={() => onImageRatioChange(opt.ratio)}
+                                  >
+                                    {Icon ? <Icon className="size-3.5 stroke-[1.8]" /> : null}
+                                    <span>{opt.label}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ChatGPT 或多渠道布局：像素尺寸与宽高比预设 */}
+                        {(hasChatGPT || isMultiChannel || (!hasAgnes && !hasGemini)) && (
+                          <>
+                            <div className="mb-3">
+                              <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
+                                尺寸 <Info className="size-3.5 text-stone-400" />
+                              </div>
+                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                                <div className="flex items-center rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">
+                                  <span className="mr-2 text-stone-500">W</span>
+                                  <Input
+                                    type="number"
+                                    inputMode="numeric"
+                                    min="1"
+                                    value={imageWidth}
+                                    onChange={(event) => onImageWidthChange(event.target.value)}
+                                    className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
+                                  />
+                                </div>
+                                <span className="text-stone-400">×</span>
+                                <div className="flex items-center rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">
+                                  <span className="mr-2 text-stone-500">H</span>
+                                  <Input
+                                    type="number"
+                                    inputMode="numeric"
+                                    min="1"
+                                    value={imageHeight}
+                                    onChange={(event) => onImageHeightChange(event.target.value)}
+                                    className="h-7 border-0 bg-transparent px-0 text-sm font-medium text-stone-800 shadow-none focus-visible:ring-0"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+
+                            {hasAgnes && isMultiChannel && (
+                              <div className="mb-3">
+                                <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
+                                  Agnes 分辨率档位
+                                </div>
+                                <div className="grid grid-cols-4 gap-2">
+                                  {agnesTierOptions.map((tier) => {
+                                    const active = agnesTier === tier;
+                                    return (
+                                      <button
+                                        key={tier}
+                                        type="button"
+                                        className={cn(
+                                          "h-8 cursor-pointer rounded-xl border border-stone-200 bg-white text-xs font-medium text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                          active && "border-stone-950 bg-stone-950 font-semibold text-white",
+                                        )}
+                                        onClick={() => onImageTierChange(tier)}
+                                      >
+                                        {tier.toUpperCase()}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="mb-3">
+                              <div className="mb-2 flex items-center gap-1.5 text-sm font-medium text-stone-900">
+                                宽高比 <Info className="size-3.5 text-stone-400" />
+                              </div>
+                              <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+                                {aspectOptions.map((option) => {
+                                  const active =
+                                    option.ratio === imageRatio &&
+                                    option.tier === imageTier &&
+                                    option.width === imageWidth &&
+                                    option.height === imageHeight;
+                                  const Icon = option.icon;
+                                  const disabled =
+                                    !supportsHighResolution && (option.tier === "2k" || option.tier === "4k");
+                                  return (
+                                    <button
+                                      key={`${option.ratio}-${option.tier}-${option.label}`}
+                                      type="button"
+                                      disabled={disabled}
+                                      className={cn(
+                                        "flex h-[64px] cursor-pointer flex-col items-center justify-center gap-1 rounded-2xl border border-stone-200 bg-white text-sm text-stone-800 transition hover:border-stone-300 hover:bg-stone-50",
+                                        active && "border-stone-950",
+                                        disabled &&
+                                          "cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 hover:border-stone-100 hover:bg-stone-50",
+                                      )}
+                                      onClick={() => {
+                                        if (disabled) {
+                                          return;
+                                        }
+                                        onImageRatioChange(option.ratio);
+                                        onImageTierChange(option.tier);
+                                        onImageWidthChange(option.width);
+                                        onImageHeightChange(option.height);
+                                      }}
+                                    >
+                                      {Icon ? (
+                                        <>
+                                          <Icon className="size-3.5 stroke-[1.8]" />
+                                          <span>{option.label}</span>
+                                        </>
+                                      ) : (
+                                        <span>{option.label}</span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {/* 数量选择 */}
                         <div className="border-t border-stone-100 pt-3">
-                          <div className="mb-2 text-sm font-medium text-stone-900">生成数量</div>
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-sm font-medium text-stone-900">
+                              {isMultiChannel ? "每渠道生成数量" : "生成数量"}
+                            </span>
+                            {isMultiChannel && (
+                              <span className="text-xs text-stone-500">
+                                共 {activeChannelCount * (Number(imageCount) || 1)} 张
+                              </span>
+                            )}
+                          </div>
                           <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
                             {countOptions.map((option) => {
                               const active = imageCount === option;

@@ -66,6 +66,22 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(updated["quota"], 0)
             self.assertEqual(updated["status"], "限流")
 
+    def test_update_account_can_rotate_access_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_accounts(["token-old"])
+            service.update_account(
+                "token-old",
+                {
+                    "access_token": "token-new",
+                    "status": "正常",
+                },
+            )
+            self.assertIsNone(service.get_account("token-old"))
+            new_acc = service.get_account("token-new")
+            self.assertIsNotNone(new_acc)
+            self.assertEqual(new_acc["access_token"], "token-new")
+
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
         self.assertEqual(split_image_model("gpt-image-2.5"), (None, "gpt-image-2.5"))

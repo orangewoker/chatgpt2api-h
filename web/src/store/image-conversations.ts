@@ -5,7 +5,7 @@ import localforage from "localforage";
 import type { ImageModel } from "@/lib/api";
 
 export type ImageConversationMode = "generate" | "edit";
-export type ImageChannel = "chatgpt" | "agnes";
+export type ImageChannel = "chatgpt" | "agnes" | "gemini";
 
 export type StoredReferenceImage = {
   name: string;
@@ -80,7 +80,7 @@ function normalizeStoredImage(image: StoredImage): StoredImage {
     ...image,
     taskId: typeof image.taskId === "string" && image.taskId ? image.taskId : undefined,
     model: typeof image.model === "string" && image.model ? image.model : undefined,
-    channel: image.channel === "chatgpt" || image.channel === "agnes" ? image.channel : undefined,
+    channel: image.channel === "chatgpt" || image.channel === "agnes" || image.channel === "gemini" ? image.channel : undefined,
     taskStatus: image.taskStatus === "queued" || image.taskStatus === "running" ? image.taskStatus : undefined,
     url: typeof image.url === "string" && image.url ? image.url : undefined,
     revised_prompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,

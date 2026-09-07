@@ -19,7 +19,7 @@ export type ImageStorageSettings = {
 export type Account = {
   access_token: string;
   type: AccountType;
-  provider?: "chatgpt" | "agnes" | null;
+  provider?: "chatgpt" | "agnes" | "gemini" | null;
   quota_mode?: "local" | "external";
   label?: string | null;
   source_type?: string | null;
@@ -48,7 +48,7 @@ export type AccountImportPayload = {
   type?: string;
   export_type?: string;
   source_type?: string;
-  provider?: "chatgpt" | "agnes";
+  provider?: "chatgpt" | "agnes" | "gemini";
   quota_mode?: "local" | "external";
   label?: string;
   [key: string]: unknown;

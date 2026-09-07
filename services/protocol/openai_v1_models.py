@@ -4,7 +4,13 @@ from typing import Any
 
 from services.account_service import account_service
 from services.model_service import model_catalog_service
-from utils.helper import AGNES_IMAGE_MODEL, CODEX_IMAGE_MODEL, WEB_IMAGE_MODELS
+from utils.helper import (
+    AGNES_IMAGE_MODEL,
+    CODEX_IMAGE_MODEL,
+    GEMINI_IMAGE_MODEL,
+    GEMINI_IMAGE_MODELS,
+    WEB_IMAGE_MODELS,
+)
 
 
 def list_models() -> dict[str, Any]:
@@ -29,6 +35,13 @@ def list_models() -> dict[str, Any]:
            and account_service.account_provider(account) == "agnes"
            and account_service._is_image_account_available(account)
     ]
+    gemini_image_accounts = [
+        account
+        for account in accounts
+        if isinstance(account, dict)
+           and account_service.account_provider(account) == "gemini"
+           and account_service._is_image_account_available(account)
+    ]
     codex_types = {
         normalized
         for account in accounts
@@ -43,6 +56,8 @@ def list_models() -> dict[str, Any]:
         dynamic_models.update(WEB_IMAGE_MODELS)
     if agnes_image_accounts:
         dynamic_models.add(AGNES_IMAGE_MODEL)
+    if gemini_image_accounts:
+        dynamic_models.update(GEMINI_IMAGE_MODELS)
     if codex_types & {"Plus", "Team", "Pro"}:
         dynamic_models.add(CODEX_IMAGE_MODEL)
     if "Plus" in codex_types:

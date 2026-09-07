@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   LogIn,
   ServerCog,
+  Sparkles,
   Upload,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -38,7 +39,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ImportMethod = "menu" | "token" | "agnes" | "session" | "codex-auth" | "account-json" | "oauth";
+type ImportMethod = "menu" | "token" | "agnes" | "gemini" | "session" | "codex-auth" | "account-json" | "oauth";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
@@ -186,6 +187,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
   const [agnesKeyInput, setAgnesKeyInput] = useState("");
+  const [geminiCookieInput, setGeminiCookieInput] = useState("");
+  const [geminiProxyInput, setGeminiProxyInput] = useState("");
   const [sessionInput, setSessionInput] = useState("");
   const [codexAuthInput, setCodexAuthInput] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -203,6 +206,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
     setMethod("menu");
     setTokenInput("");
     setAgnesKeyInput("");
+    setGeminiCookieInput("");
+    setGeminiProxyInput("");
     setSessionInput("");
     setCodexAuthInput("");
     setPendingAccountJsonImport(null);
@@ -241,9 +246,9 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
         );
       } else {
-        const hasExternalProvider = accountPayloads.some((item) => item.provider === "agnes");
+        const hasExternalProvider = accountPayloads.some((item) => item.provider === "agnes" || item.provider === "gemini");
         toast.success(
-          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，${hasExternalProvider ? "首次生图时验证 API Key" : "已自动刷新账号信息"}`,
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，${hasExternalProvider ? "首次生图时验证凭证有效性" : "已自动刷新账号信息"}`,
         );
       }
     } catch (error) {
@@ -269,6 +274,21 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       label: keys.length === 1 ? "Agnes" : `Agnes ${index + 1}`,
     }));
     await submitTokens(keys, "Agnes API Key 导入完成", accounts);
+  };
+
+  const handleImportGeminiCookies = async () => {
+    const cookies = splitTokens(geminiCookieInput);
+    const proxy = geminiProxyInput.trim() || undefined;
+    const accounts: AccountImportPayload[] = cookies.map((cookie, index) => ({
+      access_token: cookie,
+      provider: "gemini",
+      source_type: "session_cookie",
+      type: "Gemini",
+      quota_mode: "external",
+      label: cookies.length === 1 ? "Gemini Pro" : `Gemini Pro ${index + 1}`,
+      proxy,
+    }));
+    await submitTokens(cookies, "Gemini Web Cookie 导入完成", accounts);
   };
 
   // 起授权：拿 authorize URL，立刻在新窗口打开，方便用户登录
@@ -497,6 +517,53 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             查看 Agnes Image 2.1 Flash 文档
             <ExternalLink className="size-3.5" />
           </a>
+        </div>
+      );
+    }
+
+    if (method === "gemini") {
+      const cookieCount = splitTokens(geminiCookieInput).length;
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setMethod("menu")}
+              className="inline-flex items-center gap-1 text-sm text-stone-500 transition hover:text-stone-800"
+            >
+              <ArrowLeft className="size-4" />
+              返回导入方式
+            </button>
+            <span className="text-xs text-stone-400">当前识别 {cookieCount} 个 Cookie</span>
+          </div>
+          <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm leading-6 text-stone-600 space-y-1">
+            <div className="font-medium text-stone-800">获取说明</div>
+            <p>
+              从浏览器登录 <a href="https://gemini.google.com" target="_blank" rel="noreferrer" className="font-medium text-stone-900 underline">gemini.google.com</a> 后，打开 F12 开发者工具（Application → Cookies 或 Network 请求标头），复制完整的 Cookie 字符串（Google 鉴权必须同时包含 <code className="rounded bg-stone-200 px-1">__Secure-1PSID</code> 与 <code className="rounded bg-stone-200 px-1">__Secure-1PSIDTS</code>）。也支持直接粘贴 Cookie-Editor 插件导出的 JSON。
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-stone-700">Gemini Web Cookie</label>
+            <Textarea
+              placeholder="粘贴完整 Cookie 字符串（例如包含 __Secure-1PSID=...; __Secure-1PSIDTS=...）或 Cookie-Editor 导出的 JSON..."
+              value={geminiCookieInput}
+              onChange={(event) => setGeminiCookieInput(event.target.value)}
+              className="min-h-32 resize-none rounded-xl border-stone-200 font-mono text-xs"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-stone-700">
+              专属代理 (可选)
+              <span className="ml-2 text-xs font-normal text-stone-400">留空则走本地直连网络</span>
+            </label>
+            <input
+              type="text"
+              placeholder="例如: socks5://127.0.0.1:10808 或 vless://... / vmess://..."
+              value={geminiProxyInput}
+              onChange={(event) => setGeminiProxyInput(event.target.value)}
+              className="w-full rounded-xl border border-stone-200 bg-white px-3 py-2 text-sm outline-none focus:border-stone-400 font-mono text-xs"
+            />
+          </div>
         </div>
       );
     }
@@ -784,6 +851,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => setMethod("agnes")}
         />
         <MethodCard
+          title="导入 Gemini Web Cookie"
+          description="接入 Google Gemini 逆向生图，自动消除星标水印，支持独立专属代理或本地直连。"
+          icon={Sparkles}
+          onClick={() => setMethod("gemini")}
+        />
+        <MethodCard
           title="导入 Access Token"
           description="支持直接粘贴，一行一个；也支持从 TXT 文件读取，一行一个。"
           icon={KeyRound}
@@ -853,6 +926,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                   ? "导入 Access Token"
                   : method === "agnes"
                     ? "导入 Agnes API Key"
+                  : method === "gemini"
+                    ? "导入 Google Gemini Web Cookie"
                   : method === "session"
                     ? "导入 Session JSON"
                     : method === "codex-auth"
@@ -868,6 +943,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
                   ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
                   : method === "agnes"
                     ? "导入一个或多个 Agnes API Key；首次真实生图请求会完成有效性验证。"
+                  : method === "gemini"
+                    ? "导入 Google Gemini Web Cookie 字符串，支持单独配置专属代理。"
                   : method === "session"
                     ? "粘贴完整 Session JSON，系统会自动提取 accessToken。"
                     : method === "codex-auth"
@@ -907,6 +984,16 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
               >
                 {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
                 导入 API Key
+              </Button>
+            ) : null}
+            {method === "gemini" ? (
+              <Button
+                className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
+                onClick={() => void handleImportGeminiCookies()}
+                disabled={footerDisabled || splitTokens(geminiCookieInput).length === 0}
+              >
+                {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
+                导入 Gemini 账号
               </Button>
             ) : null}
             {method === "session" ? (

@@ -57,6 +57,7 @@ const SCROLL_POSITIONS_STORAGE_KEY = "chatgpt2api:image_scroll_positions";
 const SCROLL_TO_LATEST_THRESHOLD = 160;
 const CHATGPT_IMAGE_MODEL = "gpt-image-2";
 const AGNES_IMAGE_MODEL = "agnes-image-2.1-flash";
+const GEMINI_IMAGE_MODEL = "gemini-image-2.5-flash";
 
 function loadScrollPositions(): Map<string, number> {
   if (typeof window === "undefined") return new Map();
@@ -170,10 +171,21 @@ function isAgnesImageModel(model: ImageModel) {
   return model.toLowerCase() === "agnes-image-2.1-flash";
 }
 
+function isGeminiImageModel(model: ImageModel) {
+  const lower = model.toLowerCase();
+  return lower.startsWith("gemini") || lower.startsWith("imagen");
+}
+
+function isChatGPTImageModel(model: ImageModel) {
+  return !isAgnesImageModel(model) && !isGeminiImageModel(model);
+}
+
 function requestSizeForTurn(turn: ImageTurn) {
-  if (!isAgnesImageModel(turn.model)) return turn.size;
-  const tier = String(turn.tier || "1k").toUpperCase();
-  return ["1K", "2K", "3K", "4K"].includes(tier) ? tier : "1K";
+  if (isAgnesImageModel(turn.model)) {
+    const tier = String(turn.tier || "1k").toUpperCase();
+    return ["1K", "2K", "3K", "4K"].includes(tier) ? tier : "1K";
+  }
+  return turn.size;
 }
 
 function requestRatioForTurn(turn: ImageTurn) {
@@ -181,7 +193,7 @@ function requestRatioForTurn(turn: ImageTurn) {
 }
 
 function requestQualityForTurn(turn: ImageTurn) {
-  return isAgnesImageModel(turn.model) ? "auto" : turn.quality;
+  return (isAgnesImageModel(turn.model) || isGeminiImageModel(turn.model)) ? "auto" : turn.quality;
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -1198,14 +1210,18 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   const createLoadingImages = (turnId: string, count: number, models: ImageModel[] = [imageModel]) =>
     models.flatMap((model) => {
-      const channel = isAgnesImageModel(model) ? "agnes" : "chatgpt";
+      const channel: "chatgpt" | "agnes" | "gemini" = isGeminiImageModel(model)
+        ? "gemini"
+        : isAgnesImageModel(model)
+          ? "agnes"
+          : "chatgpt";
       return Array.from({ length: count }, (_, index) => {
         const imageId = `${turnId}-${channel}-${index}`;
         return {
           id: imageId,
           taskId: imageId,
           model,
-          channel: channel as "chatgpt" | "agnes",
+          channel,
           status: "loading" as const,
         };
       });
@@ -1659,8 +1675,37 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     const conversationId = targetConversation?.id ?? createId();
     const turnId = createId();
     const imageSize = `${imageWidth || 1024}x${imageHeight || 1024}`;
-    const primaryModel = isAgnesImageModel(imageModel) ? CHATGPT_IMAGE_MODEL : imageModel;
-    const batchModels = Array.from(new Set<ImageModel>([primaryModel, AGNES_IMAGE_MODEL]));
+    const hasChatGPT = imageModels.some(isChatGPTImageModel);
+    const hasAgnes = imageModels.some(isAgnesImageModel);
+    const hasGemini = imageModels.some(isGeminiImageModel);
+    const channelCount = (hasChatGPT ? 1 : 0) + (hasAgnes ? 1 : 0) + (hasGemini ? 1 : 0);
+
+    let batchModels: ImageModel[] = [];
+    if (channelCount > 1) {
+      if (hasChatGPT) {
+        const chatGPTModel = isChatGPTImageModel(imageModel)
+          ? imageModel
+          : (imageModels.find(isChatGPTImageModel) || CHATGPT_IMAGE_MODEL);
+        batchModels.push(chatGPTModel);
+      }
+      if (hasAgnes) {
+        batchModels.push(AGNES_IMAGE_MODEL);
+      }
+      if (hasGemini) {
+        const geminiModel = isGeminiImageModel(imageModel)
+          ? imageModel
+          : (imageModels.find(isGeminiImageModel) || GEMINI_IMAGE_MODEL);
+        batchModels.push(geminiModel);
+      }
+    } else {
+      if (imageModel && imageModels.includes(imageModel)) {
+        batchModels = [imageModel];
+      } else if (imageModels.length > 0) {
+        batchModels = [imageModels[0]];
+      } else {
+        batchModels = [CHATGPT_IMAGE_MODEL];
+      }
+    }
     const draftTurn: ImageTurn = {
       id: turnId,
       prompt,
@@ -1713,7 +1758,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <>
-      <section className="mx-auto grid h-[calc(100dvh-6.5rem)] min-h-0 w-full max-w-[1380px] grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-3 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)]">
+      <section className="mx-auto grid h-[calc(100dvh-6.5rem)] min-h-0 w-full grid-cols-1 gap-2 overflow-hidden px-0 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] sm:h-[calc(100dvh-5.25rem)] sm:gap-3 sm:px-1 sm:pb-6 lg:grid-cols-[240px_minmax(0,1fr)] xl:grid-cols-[260px_minmax(0,1fr)] 2xl:grid-cols-[280px_minmax(0,1fr)]">
         <div className="hidden h-full min-h-0 border-r border-stone-200/70 pr-3 lg:block">
           <ImageSidebar
             conversations={conversations}

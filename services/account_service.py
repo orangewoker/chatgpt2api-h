@@ -139,6 +139,8 @@ class AccountService:
             return "chatgpt"
         if provider in {"agnes", "agnes_ai"}:
             return "agnes"
+        if provider in {"gemini", "gemini_web", "google"}:
+            return "gemini"
         raise ValueError(f"unsupported account provider: {provider}")
 
     @classmethod
@@ -152,6 +154,8 @@ class AccountService:
         account_type = cls._normalize_account_type(account.get("type"))
         if source in {"agnes", "agnes_ai"} or account_type == "Agnes":
             return "agnes"
+        if source in {"gemini", "gemini_web", "google"} or account_type == "Gemini":
+            return "gemini"
         return "chatgpt"
 
     @classmethod
@@ -227,6 +231,8 @@ class AccountService:
             "business": "Team",
             "enterprise": "Enterprise",
             "agnes": "Agnes",
+            "gemini": "Gemini",
+            "google": "Gemini",
         }
         return aliases.get(compact) or aliases.get(key) or raw
 
@@ -264,9 +270,11 @@ class AccountService:
         normalized["provider"] = provider
         if provider == "agnes":
             normalized["type"] = "Agnes"
+        elif provider == "gemini":
+            normalized["type"] = "Gemini"
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
-        normalized["quota_mode"] = "external" if provider == "agnes" else str(normalized.get("quota_mode") or "local")
+        normalized["quota_mode"] = "external" if provider in {"agnes", "gemini"} else str(normalized.get("quota_mode") or "local")
         normalized["label"] = str(normalized.get("label") or "").strip() or None
         normalized["email"] = normalized.get("email") or None
         normalized["user_id"] = normalized.get("user_id") or None
@@ -274,7 +282,12 @@ class AccountService:
         source_type = normalized.get("source_type")
         if not source_type and str(normalized.get("export_type") or "").strip().lower() == "codex":
             source_type = "codex"
-        normalized["source_type"] = "api_key" if provider == "agnes" else self._normalize_source_type(source_type)
+        if provider == "agnes":
+            normalized["source_type"] = "api_key"
+        elif provider == "gemini":
+            normalized["source_type"] = "session_cookie"
+        else:
+            normalized["source_type"] = self._normalize_source_type(source_type)
         limits_progress = normalized.get("limits_progress")
         normalized["limits_progress"] = limits_progress if isinstance(limits_progress, list) else []
         normalized["default_model_slug"] = normalized.get("default_model_slug") or None
@@ -941,6 +954,26 @@ class AccountService:
         with self._lock:
             return list(self._accounts)
 
+    def keepalive_gemini_accounts(self) -> None:
+        """Periodic keepalive for Gemini Web accounts to rotate and refresh __Secure-1PSIDTS."""
+        with self._lock:
+            gemini_accounts = [
+                dict(acc) for acc in self._accounts.values()
+                if acc.get("provider") == "gemini" and acc.get("status") in {"正常", "active"}
+            ]
+        for acc in gemini_accounts:
+            token = str(acc.get("access_token") or "").strip()
+            if not token:
+                continue
+            try:
+                from services.image_providers.gemini_web import GeminiWebImageProvider
+                with GeminiWebImageProvider(token, account=acc, timeout=20.0) as provider:
+                    snlm0e = provider._ensure_snlm0e()
+                    if snlm0e:
+                        provider._sync_cookies_back()
+            except Exception as exc:
+                logger.debug(f"Gemini keepalive notice for account: {exc}")
+
     def _list_ready_candidate_tokens(
             self,
             excluded_tokens: set[str] | None = None,
@@ -1285,11 +1318,12 @@ class AccountService:
         if not access_token:
             return None
         with self._lock:
-            access_token = self._resolve_access_token_locked(access_token)
-            current = self._accounts.get(access_token)
+            resolved_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(resolved_token)
             if current is None:
                 return None
-            account = self._normalize_account({**current, **updates, "access_token": access_token})
+            new_access_token = str(updates.get("access_token") or "").strip() or resolved_token
+            account = self._normalize_account({**current, **updates, "access_token": new_access_token})
             if account is None:
                 return None
             if (
@@ -1297,15 +1331,17 @@ class AccountService:
                 and config.auto_remove_rate_limited_accounts
                 and not self.is_external_image_account(account)
             ):
-                self._accounts.pop(access_token, None)
+                self._accounts.pop(resolved_token, None)
                 self._save_accounts()
-                log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
+                log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(resolved_token)})
                 return None
-            self._accounts[access_token] = account
+            if new_access_token != resolved_token:
+                self._accounts.pop(resolved_token, None)
+            self._accounts[new_access_token] = account
             self._save_accounts()
             if not quiet:
                 log_service.add(LOG_TYPE_ACCOUNT, "更新账号",
-                                {"token": anonymize_token(access_token), "status": account.get("status")})
+                                {"token": anonymize_token(new_access_token), "status": account.get("status")})
             return dict(account)
         return None
 

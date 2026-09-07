@@ -105,6 +105,7 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
                     result = account_service.keepalive_refresh_tokens(keepalive_tokens)
                     if result.get("errors"):
                         print(f"[account-watcher] keepalive errors: {result['errors']}")
+                account_service.keepalive_gemini_accounts()
             except Exception as exc:
                 print(f"[account-watcher] fail {exc}")
             stop_event.wait(interval_seconds)
@@ -115,10 +116,11 @@ def start_limited_account_watcher(stop_event: Event) -> Thread:
 
 
 def resolve_web_asset(requested_path: str) -> Path | None:
-    if not WEB_DIST_DIR.exists():
+    dist_dir = WEB_DIST_DIR if WEB_DIST_DIR.exists() else (BASE_DIR / "web" / "out")
+    if not dist_dir.exists():
         return None
     clean_path = requested_path.strip("/")
-    base_dir = WEB_DIST_DIR.resolve()
+    base_dir = dist_dir.resolve()
     candidates = [base_dir / "index.html"] if not clean_path else [
         base_dir / Path(clean_path),
         base_dir / clean_path / "index.html",

@@ -14,7 +14,12 @@ import tiktoken
 
 from services.account_service import account_service
 from services.config import config
-from services.image_providers import AgnesImageError, AgnesImageProvider
+from services.image_providers import (
+    AgnesImageError,
+    AgnesImageProvider,
+    GeminiWebImageError,
+    GeminiWebImageProvider,
+)
 from services.image_storage_service import image_storage_service
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from services.image_upscale import upscale_image_bytes
@@ -24,6 +29,7 @@ from utils.helper import (
     extract_image_from_message_content,
     is_agnes_image_model,
     is_codex_image_model,
+    is_gemini_image_model,
     is_supported_image_model,
     split_image_model,
 )
@@ -1357,12 +1363,72 @@ def _agnes_public_error(exc: AgnesImageError) -> ImageGenerationError:
     )
 
 
+def _gemini_public_error(exc: GeminiWebImageError) -> ImageGenerationError:
+    status_code = int(exc.status_code or 502)
+    error_type = exc.error_type or "server_error"
+    code = exc.code or "upstream_error"
+    message = "The Gemini image service could not complete the request."
+
+    if exc.code == "invalid_prompt":
+        status_code = 400
+        error_type = "invalid_request_error"
+        code = "invalid_prompt"
+        message = str(exc)
+    elif exc.code == "token_invalid":
+        status_code = 401
+        error_type = "authentication_error"
+        code = "invalid_session_cookie"
+        message = "The configured Gemini Web session cookie was rejected or expired."
+    elif exc.code == "insufficient_quota":
+        status_code = 429
+        error_type = "rate_limit_error"
+        code = "insufficient_quota"
+        message = "The configured Gemini account has reached its generation quota."
+    elif exc.code == "rate_limit":
+        status_code = 429
+        error_type = "rate_limit_error"
+        code = "rate_limit"
+        message = "The Gemini image service is rate limited. Please try again later."
+    elif exc.code == "no_image_generated":
+        status_code = 502
+        error_type = "server_error"
+        code = "no_image_generated"
+        message = "The Gemini image service did not return an image."
+    elif status_code == 400:
+        error_type = "invalid_request_error"
+        code = "invalid_request_error"
+        message = "The Gemini image request was rejected by the upstream service."
+    elif status_code in {504, 408}:
+        status_code = 504
+        error_type = "server_error"
+        code = "upstream_timeout"
+        message = "The Gemini image request timed out."
+
+    return ImageGenerationError(
+        message,
+        status_code=status_code,
+        error_type=error_type,
+        code=code,
+    )
+
+
 def _record_agnes_result(access_token: str, success: bool) -> None:
     try:
         account_service.mark_image_result(access_token, success, release_slot=False)
     except Exception as exc:
         logger.warning({
             "event": "agnes_account_result_persist_failed",
+            "success": success,
+            "error_type": type(exc).__name__,
+        })
+
+
+def _record_gemini_result(access_token: str, success: bool) -> None:
+    try:
+        account_service.mark_image_result(access_token, success, release_slot=False)
+    except Exception as exc:
+        logger.warning({
+            "event": "gemini_account_result_persist_failed",
             "success": success,
             "error_type": type(exc).__name__,
         })
@@ -1377,6 +1443,126 @@ def _update_agnes_account(access_token: str, updates: dict[str, Any]) -> None:
             "status": updates.get("status"),
             "error_type": type(exc).__name__,
         })
+
+
+def _update_gemini_account(access_token: str, updates: dict[str, Any]) -> None:
+    try:
+        account_service.update_account(access_token, updates, quiet=True)
+    except Exception as exc:
+        logger.warning({
+            "event": "gemini_account_status_persist_failed",
+            "status": updates.get("status"),
+            "error_type": type(exc).__name__,
+        })
+
+
+def _generate_single_gemini_image(
+        request: ConversationRequest,
+        index: int,
+        total: int,
+) -> list[ImageOutput]:
+    attempted_tokens: set[str] = set()
+    last_error: GeminiWebImageError | None = None
+    while True:
+        try:
+            token = account_service.get_available_access_token(
+                provider="gemini",
+                excluded_tokens=attempted_tokens,
+            )
+        except RuntimeError as exc:
+            if last_error is not None:
+                raise _gemini_public_error(last_error) from last_error
+            raise ImageGenerationError(
+                "No available Gemini Web account.",
+                status_code=429,
+                error_type="rate_limit_error",
+                code="insufficient_quota",
+            ) from exc
+
+        attempted_tokens.add(token)
+        account = account_service.get_account(token) or {}
+        provider: GeminiWebImageProvider | None = None
+        try:
+            if request.progress_callback:
+                request.progress_callback("getting_account")
+                request.progress_callback("generating_image")
+            provider = GeminiWebImageProvider(token, account=account)
+            result = provider.generate(
+                prompt=prompt_with_global_system(request.prompt),
+                size=request.size or "1024x1024",
+                ratio=request.ratio,
+                images=request.images or None,
+            )
+            data = format_image_result(
+                result.get("data") if isinstance(result.get("data"), list) else [],
+                request.prompt,
+                request.response_format,
+                request.base_url,
+                int(result.get("created") or time.time()),
+            )["data"]
+            if not data:
+                raise GeminiWebImageError(
+                    "Gemini completed without generating an image",
+                    code="no_image_generated",
+                )
+            if request.progress_callback:
+                request.progress_callback("receiving_image")
+            _record_gemini_result(token, True)
+            return [ImageOutput(
+                kind="result",
+                model=request.model,
+                index=index,
+                total=total,
+                created=int(result.get("created") or time.time()),
+                data=data,
+            )]
+        except GeminiWebImageError as exc:
+            last_error = exc
+            logger.error({
+                "event": "gemini_generation_error",
+                "token_prefix": token[:20] if token else "",
+                "status_code": exc.status_code,
+                "code": exc.code,
+                "error": str(exc),
+            })
+            if int(exc.status_code or 0) in {400}:
+                raise _gemini_public_error(exc) from exc
+
+            _record_gemini_result(token, False)
+            if int(exc.status_code or 0) in {401, 403}:
+                _update_gemini_account(token, {
+                    "status": "异常",
+                    "last_invalid_at": datetime.now(timezone.utc).isoformat(),
+                    "last_token_refresh_error": str(exc),
+                })
+                continue
+            if int(exc.status_code or 0) == 429:
+                updates: dict[str, Any] = {"status": "限流"}
+                retry_after = max(1, min(int(exc.retry_after_seconds or 60), 24 * 60 * 60))
+                updates["restore_at"] = (
+                    datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                ).isoformat()
+                _update_gemini_account(token, updates)
+                continue
+            raise _gemini_public_error(exc) from exc
+        except Exception as exc:
+            logger.error({
+                "event": "gemini_unexpected_error",
+                "token_prefix": token[:20] if token else "",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            })
+            _record_gemini_result(token, False)
+            raise ImageGenerationError(
+                f"The Gemini image service could not complete the request: {exc}",
+                status_code=502,
+                error_type="server_error",
+                code="upstream_error",
+            ) from exc
+        finally:
+            if provider is not None:
+                provider.close()
+            account_service.release_image_slot(token)
 
 
 def _generate_single_agnes_image(
@@ -1488,6 +1674,8 @@ def _generate_single_image(
     """
     if is_agnes_image_model(request.model):
         return _generate_single_agnes_image(request, index, total)
+    if is_gemini_image_model(request.model):
+        return _generate_single_gemini_image(request, index, total)
 
     # 模型返回文本而非图片的最大重试次数
     MAX_TEXT_REPLY_RETRIES = 3
