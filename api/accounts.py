@@ -138,6 +138,46 @@ def _safe_export_name(value: str, fallback: str) -> str:
     return (clean or fallback)[:80]
 
 
+def _extract_json_or_cookie(text: str) -> tuple[str | None, Any]:
+    raw = text.strip()
+    if not raw:
+        return None, None
+
+    # 1. Strip markdown fences if present
+    fence_match = re.search(r"```(?:json)?\s*([\[\{].*?[\]\}])\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        try:
+            parsed = json.loads(candidate)
+            return json.dumps(parsed, ensure_ascii=False), parsed
+        except Exception:
+            pass
+
+    # 2. Heuristic: locate outermost '[' ... ']' or '{' ... '}'
+    start_bracket = raw.find("[")
+    start_brace = raw.find("{")
+    starts = [pos for pos in [start_bracket, start_brace] if pos != -1]
+    if starts:
+        start_pos = min(starts)
+        end_bracket = raw.rfind("]")
+        end_brace = raw.rfind("}")
+        end_pos = max(end_bracket, end_brace)
+        if end_pos > start_pos:
+            candidate = raw[start_pos : end_pos + 1].strip()
+            cleaned = re.sub(r",\s*([\]\}])", r"\1", candidate)
+            try:
+                parsed = json.loads(cleaned)
+                return json.dumps(parsed, ensure_ascii=False), parsed
+            except Exception:
+                try:
+                    parsed = json.loads(candidate)
+                    return json.dumps(parsed, ensure_ascii=False), parsed
+                except Exception:
+                    pass
+
+    return None, None
+
+
 def _heal_split_cookie_payloads(
     account_payloads: list[dict[str, Any]], tokens: list[str]
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -146,27 +186,37 @@ def _heal_split_cookie_payloads(
         for item in account_payloads
     ] if account_payloads else [str(t or "").strip() for t in tokens if str(t or "").strip()]
 
-    if (
-        len(tokens_to_test) > 1
-        and tokens_to_test[0].startswith(("[", "{"))
-        and tokens_to_test[-1].endswith(("]", "}"))
-    ):
-        combined = "\n".join(tokens_to_test)
-        try:
-            parsed = json.loads(combined)
-            if (
-                isinstance(parsed, list)
-                and any(isinstance(x, dict) and "name" in x and "value" in x for x in parsed)
-            ) or isinstance(parsed, dict):
-                healed_token = json.dumps(parsed, ensure_ascii=False)
-                if account_payloads:
-                    base = dict(account_payloads[0])
-                    base["access_token"] = healed_token
-                    base["label"] = re.sub(r"\s+\d+$", "", str(base.get("label") or "Gemini Pro"))
-                    return [base], [healed_token]
-                return [], [healed_token]
-        except Exception:
-            pass
+    is_gemini = any(
+        str(item.get("provider") or "").strip().lower() == "gemini"
+        for item in account_payloads
+    )
+
+    combined_text = "\n".join(tokens_to_test)
+    healed_json_str, parsed = _extract_json_or_cookie(combined_text)
+
+    if healed_json_str and parsed:
+        is_cookie_format = False
+        if isinstance(parsed, list) and any(
+            isinstance(x, dict) and ("name" in x or "value" in x or "domain" in x) for x in parsed
+        ):
+            is_cookie_format = True
+        elif isinstance(parsed, dict) and any(
+            k in parsed for k in ("__Secure-1PSID", "__Secure-1PSIDTS", "SAPISID", "SID", "access_token")
+        ):
+            is_cookie_format = True
+
+        if is_cookie_format or is_gemini or len(tokens_to_test) > 1:
+            if account_payloads:
+                base = dict(account_payloads[0])
+                base["access_token"] = healed_json_str
+                for item in account_payloads:
+                    if item.get("proxy"):
+                        base["proxy"] = item["proxy"]
+                        break
+                base["label"] = re.sub(r"\s+\d+$", "", str(base.get("label") or "Gemini Pro"))
+                return [base], [healed_json_str]
+            return [], [healed_json_str]
+
     return account_payloads, tokens
 
 
@@ -267,7 +317,19 @@ def create_router() -> APIRouter:
                 result = account_service.add_accounts(tokens)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-        refresh_result = account_service.refresh_accounts(tokens)
+        refresh_tokens = [
+            token for token in tokens
+            if not account_service.is_external_image_account(account_service.get_account(token))
+        ]
+        if refresh_tokens:
+            refresh_result = account_service.refresh_accounts(refresh_tokens)
+        else:
+            refresh_result = {
+                "refreshed": 0,
+                "skipped_external": len(tokens),
+                "errors": [],
+                "items": result.get("items", account_service.list_accounts()),
+            }
         return {
             **result,
             "refreshed": refresh_result.get("refreshed", 0),

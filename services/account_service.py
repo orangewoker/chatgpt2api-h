@@ -267,6 +267,16 @@ class AccountService:
             normalized.pop("type", None)
         normalized["type"] = normalized.get("type") or "free"
         provider = self.account_provider(normalized)
+        if provider == "gemini":
+            from services.image_providers.gemini_web import _parse_cookie_input
+            cookies, _ = _parse_cookie_input(access_token)
+            if not cookies or ("__Secure-1PSID" not in cookies and "SID" not in cookies and "__Secure-3PSID" not in cookies):
+                try:
+                    p = json.loads(access_token)
+                    if not (isinstance(p, list) and any(isinstance(x, dict) and "name" in x for x in p)):
+                        return None
+                except Exception:
+                    return None
         normalized["provider"] = provider
         if provider == "agnes":
             normalized["type"] = "Agnes"

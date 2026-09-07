@@ -86,9 +86,10 @@ def _parse_cookie_input(token: str, account: dict | None = None) -> tuple[dict[s
                 if "=" in part:
                     k, v = part.strip().split("=", 1)
                     cookies[k.strip()] = v.strip()
-        else:
-            # User pasted raw token value without cookie name prefix
-            cookies["__Secure-1PSID"] = token_str
+        elif not any(c in token_str for c in (":", '"', "{", "}", "[", "]", ",", "\n", "\r", " ")):
+            # User pasted raw token value without cookie name prefix (e.g. g.a000...)
+            if len(token_str) >= 20:
+                cookies["__Secure-1PSID"] = token_str
 
     return cookies, snlm0e
 

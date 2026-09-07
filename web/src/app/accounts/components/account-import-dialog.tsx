@@ -63,11 +63,47 @@ function splitTokens(value: string) {
 }
 
 function parseGeminiCookieInputs(value: string): string[] {
-  const trimmed = value.trim();
+  let trimmed = value.trim();
   if (!trimmed) {
     return [];
   }
 
+  // Strip markdown code fences if present (e.g. ```json ... ```)
+  if (trimmed.startsWith("```")) {
+    trimmed = trimmed.replace(/^```[a-zA-Z]*\r?\n?/, "").replace(/\r?\n?```$/, "").trim();
+  }
+
+  // Extract outermost '[' ... ']' or '{' ... '}' if surrounded by text/chatter
+  const startBracket = trimmed.indexOf("[");
+  const startBrace = trimmed.indexOf("{");
+  const starts = [startBracket, startBrace].filter((pos) => pos !== -1);
+  if (starts.length > 0) {
+    const startPos = Math.min(...starts);
+    const endBracket = trimmed.lastIndexOf("]");
+    const endBrace = trimmed.lastIndexOf("}");
+    const endPos = Math.max(endBracket, endBrace);
+    if (endPos > startPos) {
+      const candidate = trimmed.substring(startPos, endPos + 1).trim();
+      const cleaned = candidate.replace(/,\s*([\]}])/g, "$1");
+      try {
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed) || (typeof parsed === "object" && parsed !== null)) {
+          return [JSON.stringify(parsed)];
+        }
+      } catch {
+        try {
+          const parsed = JSON.parse(candidate);
+          if (Array.isArray(parsed) || (typeof parsed === "object" && parsed !== null)) {
+            return [JSON.stringify(parsed)];
+          }
+        } catch {
+          // continue
+        }
+      }
+    }
+  }
+
+  // Direct JSON parse attempt
   if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -86,7 +122,15 @@ function parseGeminiCookieInputs(value: string): string[] {
         return [JSON.stringify(parsed)];
       }
     } catch {
-      // fallback to line splitting
+      // fallback
+    }
+  }
+
+  // If it contains __Secure-1PSID, even if split across lines, treat as a single cookie session
+  if (trimmed.includes("__Secure-1PSID")) {
+    const lines = splitTokens(trimmed);
+    if (lines.length > 1 && !lines.every((l) => l.includes("__Secure-1PSID"))) {
+      return [trimmed];
     }
   }
 

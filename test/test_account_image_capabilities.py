@@ -100,6 +100,39 @@ class AccountCapabilityTests(unittest.TestCase):
         self.assertEqual(healed_payloads[0]["label"], "Gemini Pro")
         self.assertIn("test_psid", healed_payloads[0]["access_token"])
 
+    def test_heal_split_cookie_payloads_with_markdown_fences_and_chatter(self) -> None:
+        dirty_lines = [
+            "Here is the cookie json:",
+            "```json",
+            "[",
+            '  {"domain": ".google.com", "name": "__Secure-1PSID", "value": "test_psid"}',
+            "]",
+            "```",
+            "Hope this helps!",
+        ]
+        payloads = [
+            {"access_token": line, "provider": "gemini", "label": f"Gemini Pro {i+1}"}
+            for i, line in enumerate(dirty_lines)
+        ]
+        healed_payloads, healed_tokens = _heal_split_cookie_payloads(payloads, dirty_lines)
+        self.assertEqual(len(healed_payloads), 1)
+        self.assertEqual(len(healed_tokens), 1)
+        self.assertEqual(healed_payloads[0]["label"], "Gemini Pro")
+        self.assertIn("test_psid", healed_payloads[0]["access_token"])
+
+    def test_broken_gemini_tokens_rejected_by_normalize_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            # Junk lines from a split JSON
+            self.assertIsNone(service._normalize_account({"access_token": '"domain": ".google.com",', "provider": "gemini"}))
+            self.assertIsNone(service._normalize_account({"access_token": '"hostOnly": false,', "provider": "gemini"}))
+            self.assertIsNone(service._normalize_account({"access_token": "```json", "provider": "gemini"}))
+            self.assertIsNone(service._normalize_account({"access_token": "{", "provider": "gemini"}))
+            # Valid cookie
+            valid = service._normalize_account({"access_token": '__Secure-1PSID=psid_val; __Secure-1PSIDTS=ts_val', "provider": "gemini"})
+            self.assertIsNotNone(valid)
+            self.assertEqual(valid["provider"], "gemini")
+
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))
         self.assertEqual(split_image_model("gpt-image-2.5"), (None, "gpt-image-2.5"))
