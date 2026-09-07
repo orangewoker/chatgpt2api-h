@@ -256,8 +256,8 @@ class AccountService:
     def _normalize_account(self, item: dict) -> dict | None:
         if not isinstance(item, dict):
             return None
-        access_token = item.get("access_token") or item.get("accessToken") or ""
-        if not access_token:
+        access_token = str(item.get("access_token") or item.get("accessToken") or "").strip()
+        if not access_token or len(access_token) < 3 or access_token in {"[", "{", "]", "}", "null", "undefined"}:
             return None
         normalized = dict(item)
         normalized.pop("accessToken", None)

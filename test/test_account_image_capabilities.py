@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from api.accounts import _heal_split_cookie_payloads
 from services.account_service import AccountService
 from services.auth_service import AuthService
 from services.config import config
@@ -81,6 +82,23 @@ class AccountCapabilityTests(unittest.TestCase):
             new_acc = service.get_account("token-new")
             self.assertIsNotNone(new_acc)
             self.assertEqual(new_acc["access_token"], "token-new")
+
+    def test_heal_split_cookie_payloads(self) -> None:
+        split_lines = [
+            "[",
+            '  {"domain": ".google.com", "name": "__Secure-1PSID", "value": "test_psid"},',
+            '  {"domain": ".google.com", "name": "__Secure-1PSIDTS", "value": "test_psidts"}',
+            "]",
+        ]
+        payloads = [
+            {"access_token": line, "provider": "gemini", "label": f"Gemini Pro {i+1}"}
+            for i, line in enumerate(split_lines)
+        ]
+        healed_payloads, healed_tokens = _heal_split_cookie_payloads(payloads, split_lines)
+        self.assertEqual(len(healed_payloads), 1)
+        self.assertEqual(len(healed_tokens), 1)
+        self.assertEqual(healed_payloads[0]["label"], "Gemini Pro")
+        self.assertIn("test_psid", healed_payloads[0]["access_token"])
 
     def test_split_image_model_supports_plan_type_prefix(self) -> None:
         self.assertEqual(split_image_model("gpt-image-2"), (None, "gpt-image-2"))

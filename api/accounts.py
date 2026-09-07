@@ -138,6 +138,38 @@ def _safe_export_name(value: str, fallback: str) -> str:
     return (clean or fallback)[:80]
 
 
+def _heal_split_cookie_payloads(
+    account_payloads: list[dict[str, Any]], tokens: list[str]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    tokens_to_test = [
+        str(item.get("access_token") or item.get("accessToken") or "").strip()
+        for item in account_payloads
+    ] if account_payloads else [str(t or "").strip() for t in tokens if str(t or "").strip()]
+
+    if (
+        len(tokens_to_test) > 1
+        and tokens_to_test[0].startswith(("[", "{"))
+        and tokens_to_test[-1].endswith(("]", "}"))
+    ):
+        combined = "\n".join(tokens_to_test)
+        try:
+            parsed = json.loads(combined)
+            if (
+                isinstance(parsed, list)
+                and any(isinstance(x, dict) and "name" in x and "value" in x for x in parsed)
+            ) or isinstance(parsed, dict):
+                healed_token = json.dumps(parsed, ensure_ascii=False)
+                if account_payloads:
+                    base = dict(account_payloads[0])
+                    base["access_token"] = healed_token
+                    base["label"] = re.sub(r"\s+\d+$", "", str(base.get("label") or "Gemini Pro"))
+                    return [base], [healed_token]
+                return [], [healed_token]
+        except Exception:
+            pass
+    return account_payloads, tokens
+
+
 def _account_zip_bytes(items: list[dict[str, str]]) -> bytes:
     buf = io.BytesIO()
     used_names: set[str] = set()
@@ -217,8 +249,9 @@ def create_router() -> APIRouter:
     async def create_accounts(body: AccountCreateRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         account_payloads = [item for item in body.accounts if isinstance(item, dict)]
+        account_payloads, body_tokens = _heal_split_cookie_payloads(account_payloads, body.tokens)
         payload_tokens = [_account_payload_token(item) for item in account_payloads]
-        tokens = _unique_tokens([*body.tokens, *payload_tokens])
+        tokens = _unique_tokens([*body_tokens, *payload_tokens])
         if not tokens:
             raise HTTPException(status_code=400, detail={"error": "tokens is required"})
         try:
