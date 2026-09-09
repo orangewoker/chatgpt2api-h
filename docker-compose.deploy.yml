@@ -2,7 +2,7 @@ name: chatgpt2api
 
 services:
   app:
-    image: ${CHATGPT2API_IMAGE:-ghcr.io/basketikun/chatgpt2api:latest}
+    image: ${CHATGPT2API_IMAGE:-ghcr.io/orangewoker/chatgpt2api:latest}
     container_name: ${CHATGPT2API_CONTAINER_NAME:-chatgpt2api}
     restart: unless-stopped
     ports:
