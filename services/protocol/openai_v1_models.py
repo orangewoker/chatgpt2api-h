@@ -23,7 +23,11 @@ def list_models() -> dict[str, Any]:
     web_image_accounts = [
         account
         for account in active_accounts
-        if account_service._normalize_source_type(account.get("source_type")) == "web"
+        # Web accounts can be imported by token, password, refresh-token and
+        # other login flows. Only Codex-source accounts are incompatible with
+        # the ChatGPT Web image path; treating "password" as a separate product
+        # source accidentally hid all Web image models in v1.8.2.
+        if account_service._normalize_source_type(account.get("source_type")) != "codex"
     ]
     codex_types = {
         normalized

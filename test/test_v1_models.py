@@ -11,6 +11,12 @@ from services.protocol import openai_v1_models
 
 AUTH_KEY = "chatgpt2api"
 BASE_URL = "http://localhost:8000"
+WEB_IMAGE_MODEL_IDS = {
+    "gpt-image-2",
+    "gpt-image-2.5",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
+}
 
 
 class ModelListTests(unittest.TestCase):
@@ -27,6 +33,7 @@ class ModelListTests(unittest.TestCase):
                 return_value=[
                     {"access_token": "token-free", "type": "free"},
                     {"access_token": "token-web-team", "type": "Team", "source_type": "web"},
+                    {"access_token": "token-password-plus", "type": "Plus", "source_type": "password"},
                     {"access_token": "token-codex-team", "type": "Team", "source_type": "codex"},
                 ],
             ),
@@ -42,6 +49,26 @@ class ModelListTests(unittest.TestCase):
         self.assertIn("team-codex-gpt-image-2", ids)
         self.assertNotIn("plus-codex-gpt-image-2", ids)
         self.assertNotIn("pro-codex-gpt-image-2", ids)
+
+    def test_password_login_accounts_publish_web_image_models(self):
+        with (
+            mock.patch.object(
+                openai_v1_models.model_catalog_service,
+                "list_models",
+                return_value={"object": "list", "data": []},
+            ),
+            mock.patch.object(
+                openai_v1_models.account_service,
+                "list_accounts",
+                return_value=[
+                    {"access_token": "password-login", "type": "Plus", "source_type": "password", "status": "正常"},
+                ],
+            ),
+        ):
+            result = openai_v1_models.list_models()
+
+        ids = {item["id"] for item in result["data"]}
+        self.assertTrue(WEB_IMAGE_MODEL_IDS.issubset(ids))
 
     def test_list_models_does_not_return_codex_models_for_web_plus_accounts(self):
         with (
