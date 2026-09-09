@@ -748,6 +748,10 @@ def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) 
                 if delta:
                     emitted = True
                     yield delta
+            if not emitted:
+                raise RuntimeError(
+                    f"upstream returned no assistant text for model {request.model!r}"
+                )
             account_service.mark_text_used(token)
             return
         except Exception as exc:

@@ -77,6 +77,29 @@ class TextAccountRoutingTests(unittest.TestCase):
 
 
 class TextProtocolRoutingTests(unittest.TestCase):
+    def test_empty_upstream_text_is_reported_as_failure(self) -> None:
+        initial_backend = SimpleNamespace(access_token="plus")
+        request = conversation.ConversationRequest(
+            model="gpt-5-6",
+            messages=[{"role": "user", "content": "hello"}],
+        )
+
+        with (
+            mock.patch.object(
+                conversation,
+                "OpenAIBackendAPI",
+                return_value=SimpleNamespace(access_token="plus", close=lambda: None),
+            ),
+            mock.patch.object(conversation, "conversation_events", return_value=iter([
+                {"type": "conversation.done", "done": True},
+            ])),
+            mock.patch.object(conversation.account_service, "mark_text_used") as mark_used,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no assistant text"):
+                list(conversation.stream_text_deltas(initial_backend, request))
+
+        mark_used.assert_not_called()
+
     def test_text_backend_passes_requested_model_to_account_selector(self) -> None:
         backend = mock.Mock()
         with (

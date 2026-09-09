@@ -145,6 +145,20 @@ class ModelCatalogServiceTests(unittest.TestCase):
             frozenset(),
         )
 
+    def test_internal_web_and_workflow_models_are_not_advertised(self) -> None:
+        self.outcomes[""] = model_list("gpt-6-astra-wm", "research", "gpt-5-6")
+
+        result = self.catalog.list_models()
+        model_ids = {item["id"] for item in result["data"]}
+
+        self.assertIn("gpt-5-6", model_ids)
+        self.assertNotIn("gpt-6-astra-wm", model_ids)
+        self.assertNotIn("research", model_ids)
+        self.assertEqual(
+            self.catalog.route_for_model("gpt-6-astra-wm").account_types,
+            frozenset(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

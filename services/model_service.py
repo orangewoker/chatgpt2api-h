@@ -12,6 +12,24 @@ from services.openai_backend_api import OpenAIBackendAPI
 from utils.log import logger
 
 
+# The ChatGPT web catalog also exposes rollout/workflow slugs that are not
+# compatible with the plain conversation endpoint used by this service.
+# Advertising those through /v1/models makes OpenAI-compatible clients select
+# a model that can finish with no assistant message.  Keep the filter narrow:
+# normal upstream model slugs continue to be discovered dynamically.
+INCOMPATIBLE_MODEL_IDS = frozenset({"research"})
+INCOMPATIBLE_MODEL_SUFFIXES = ("-wm",)
+
+
+def is_compatible_conversation_model(model_id: object) -> bool:
+    normalized = str(model_id or "").strip().lower()
+    return bool(
+        normalized
+        and normalized not in INCOMPATIBLE_MODEL_IDS
+        and not normalized.endswith(INCOMPATIBLE_MODEL_SUFFIXES)
+    )
+
+
 @dataclass(frozen=True)
 class ModelRoute:
     account_types: frozenset[str]
@@ -52,7 +70,7 @@ class ModelCatalogService:
             if not isinstance(item, dict):
                 continue
             model_id = str(item.get("id") or "").strip()
-            if model_id and model_id not in models:
+            if is_compatible_conversation_model(model_id) and model_id not in models:
                 models[model_id] = dict(item)
         return models
 

@@ -68,6 +68,26 @@ class ModelListTests(unittest.TestCase):
         self.assertNotIn("codex-gpt-image-2", ids)
         self.assertNotIn("plus-codex-gpt-image-2", ids)
 
+    def test_list_models_ignores_disabled_and_abnormal_image_accounts(self):
+        with (
+            mock.patch.object(
+                openai_v1_models.model_catalog_service,
+                "list_models",
+                return_value={"object": "list", "data": []},
+            ),
+            mock.patch.object(
+                openai_v1_models.account_service,
+                "list_accounts",
+                return_value=[
+                    {"access_token": "web-disabled", "type": "Plus", "source_type": "web", "status": "禁用"},
+                    {"access_token": "codex-abnormal", "type": "Team", "source_type": "codex", "status": "异常"},
+                ],
+            ),
+        ):
+            result = openai_v1_models.list_models()
+
+        self.assertEqual(result["data"], [])
+
     def test_list_models_function(self):
         """测试直接调用服务层获取模型列表。"""
         result = openai_v1_models.list_models()
