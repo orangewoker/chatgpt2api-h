@@ -6,7 +6,7 @@ set -Eeuo pipefail
 #   bash install-docker.sh
 #   INSTALL_DIR=/opt/chatgpt2api CHATGPT2API_PORT=8080 bash install-docker.sh
 
-IMAGE="${CHATGPT2API_IMAGE:-ghcr.io/basketikun/chatgpt2api:latest}"
+IMAGE="${CHATGPT2API_IMAGE:-ghcr.io/orangewoker/chatgpt2api:latest}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/chatgpt2api}"
 RAW_BASE_URL="${RAW_BASE_URL:-https://raw.githubusercontent.com/orangewoker/chatgpt2api-h/main}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
