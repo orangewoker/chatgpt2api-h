@@ -14,7 +14,19 @@ from fastapi import HTTPException
 from services.proxy_service import proxy_settings
 from utils.log import logger
 
-BASE_IMAGE_MODELS = {"gpt-image-2", "codex-gpt-image-2"}
+# Keep the public aliases separate from the Codex-only model.  GPT Image 2.5
+# has two official API variants (Sunburst and Flare); the short alias is kept
+# for clients that only expose a single image-model selector.
+WEB_IMAGE_MODELS = {
+    "gpt-image-2",
+    "gpt-image-2.5",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
+}
+WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
+    r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
+)
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2"}
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 PREFIXED_CODEX_IMAGE_MODELS = {
@@ -110,7 +122,7 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
     normalized = str(model or "").strip().lower()
     if not normalized:
         return None, None
-    if normalized in BASE_IMAGE_MODELS:
+    if normalized in BASE_IMAGE_MODELS or WEB_IMAGE_MODEL_SNAPSHOT_RE.fullmatch(normalized):
         return None, normalized
     for plan_type in IMAGE_MODEL_PLAN_TYPES:
         prefix = f"{plan_type}-"
@@ -124,6 +136,11 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
 def is_supported_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
     return base_model is not None
+
+
+def is_web_image_model(model: object) -> bool:
+    normalized = str(model or "").strip().lower()
+    return normalized in WEB_IMAGE_MODELS or WEB_IMAGE_MODEL_SNAPSHOT_RE.fullmatch(normalized) is not None
 
 
 def is_codex_image_model(model: object) -> bool:

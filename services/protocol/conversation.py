@@ -15,6 +15,7 @@ from services.account_service import account_service
 from services.config import config
 from services.image_storage_service import image_storage_service
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
+from services.image_upscale import upscale_image_bytes
 from utils.helper import (
     IMAGE_MODELS,
     extract_image_from_message_content,
@@ -291,6 +292,18 @@ def format_image_result(
     if message and not data:
         result["message"] = message
     return result
+
+
+def _download_image_items(
+    backend: OpenAIBackendAPI,
+    image_urls: list[str],
+    size: object = None,
+) -> list[dict[str, Any]]:
+    """Download generated images and upscale them to the requested canvas."""
+    return [
+        {"b64_json": base64.b64encode(upscale_image_bytes(image_data, size)).decode("ascii")}
+        for image_data in backend.download_image_bytes(image_urls)
+    ]
 
 
 @dataclass
@@ -1001,10 +1014,7 @@ def stream_image_outputs(
     if image_urls:
         if request.progress_callback:
             request.progress_callback("receiving_image")
-        image_items = [
-            {"b64_json": base64.b64encode(image_data).decode("ascii")}
-            for image_data in backend.download_image_bytes(image_urls)
-        ]
+        image_items = _download_image_items(backend, image_urls, request.size)
         data = format_image_result(
             image_items,
             request.prompt,
@@ -1098,10 +1108,7 @@ def stream_image_outputs(
                 if image_urls:
                     if request.progress_callback:
                         request.progress_callback("receiving_image")
-                    image_items = [
-                        {"b64_json": base64.b64encode(image_data).decode("ascii")}
-                        for image_data in backend.download_image_bytes(image_urls)
-                    ]
+                    image_items = _download_image_items(backend, image_urls, request.size)
                     data = format_image_result(
                         image_items,
                         request.prompt,
@@ -1210,10 +1217,7 @@ def stream_image_outputs(
             if image_urls:
                 if request.progress_callback:
                     request.progress_callback("receiving_image")
-                image_items = [
-                    {"b64_json": base64.b64encode(image_data).decode("ascii")}
-                    for image_data in backend.download_image_bytes(image_urls)
-                ]
+                image_items = _download_image_items(backend, image_urls, request.size)
                 data = format_image_result(
                     image_items,
                     request.prompt,
@@ -1274,8 +1278,16 @@ def stream_codex_image_outputs(
     )))
     if not images:
         raise ImageGenerationError("No image result found in response")
+    codex_items = []
+    for item in images:
+        try:
+            raw = base64.b64decode(item, validate=True)
+            item = base64.b64encode(upscale_image_bytes(raw, request.size)).decode("ascii")
+        except Exception:
+            pass
+        codex_items.append({"b64_json": item, "revised_prompt": request.prompt})
     data = format_image_result(
-        [{"b64_json": item, "revised_prompt": request.prompt} for item in images],
+        codex_items,
         request.prompt,
         request.response_format,
         request.base_url,

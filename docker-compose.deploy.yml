@@ -1,0 +1,27 @@
+name: chatgpt2api
+
+services:
+  app:
+    image: ${CHATGPT2API_IMAGE:-ghcr.io/basketikun/chatgpt2api:latest}
+    container_name: ${CHATGPT2API_CONTAINER_NAME:-chatgpt2api}
+    restart: unless-stopped
+    ports:
+      - "${CHATGPT2API_PORT:-3000}:80"
+    volumes:
+      - ${CHATGPT2API_DATA_DIR:-./data}:/app/data
+      - ${CHATGPT2API_CONFIG_FILE:-./config.json}:/app/config.json
+    environment:
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/accounts.db}
+      CHATGPT2API_AUTH_KEY: ${CHATGPT2API_AUTH_KEY:-}
+      CHATGPT2API_BASE_URL: ${CHATGPT2API_BASE_URL:-}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:80/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
