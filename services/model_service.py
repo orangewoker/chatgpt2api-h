@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,61 @@ from utils.log import logger
 # normal upstream model slugs continue to be discovered dynamically.
 INCOMPATIBLE_MODEL_IDS = frozenset({"research"})
 INCOMPATIBLE_MODEL_SUFFIXES = ("-wm",)
+
+# Local routing aliases for the shared ChatGPT Web slug. These are not new
+# upstream slugs: send the advertised slug after selecting the matching plan.
+GPT6_VARIANT_MODELS = frozenset({"gpt-6-sol", "gpt-6-luna"})
+GPT6_VARIANT_BY_PLAN = {
+    "free": "luna",
+    "go": "luna",
+    "plus": "sol",
+    "pro": "sol",
+    "prolite": "sol",
+    "team": "sol",
+    "enterprise": "sol",
+    "edu": "sol",
+}
+
+
+def _with_gpt6_variants(
+    models: dict[str, dict[str, Any]], account_type: str,
+) -> dict[str, dict[str, Any]]:
+    """Preserve native model IDs and split an ambiguous gpt-6 by account plan.
+
+    An explicit upstream title takes precedence over the plan-based fallback.
+    Existing explicit Sol/Luna slugs also take precedence over local aliases.
+    """
+    item = models.get("gpt-6")
+    if item is None:
+        return models
+    title = " ".join(str(item.get(field) or "") for field in ("title", "display_name"))
+    named_variants = set(re.findall(r"\b(sol|luna)\b", title.lower()))
+    if len(named_variants) == 1:
+        variant = named_variants.pop()
+        basis = "upstream_title"
+    else:
+        # Do not assume that an unrecognised/combined title names one model.
+        if named_variants:
+            return models
+        variant = GPT6_VARIANT_BY_PLAN.get(account_type.lower())
+        basis = "account_plan"
+    if not variant:
+        return models
+    alias = f"gpt-6-{variant}"
+    if alias in models:
+        return models
+    result = dict(models)
+    result[alias] = {
+        **item,
+        "id": alias,
+        "root": alias,
+        "parent": "gpt-6",
+        "owned_by": "chatgpt2api",
+        "display_name": f"GPT-6 {variant.title()}",
+        "upstream_model": "gpt-6",
+        "routing_basis": basis,
+    }
+    return result
 
 
 def is_compatible_conversation_model(model_id: object) -> bool:
@@ -115,7 +171,7 @@ class ModelCatalogService:
                 if resolved_token in attempted_tokens:
                     continue
                 attempted_tokens.add(resolved_token)
-                return self._fetch_models(resolved_token)
+                return _with_gpt6_variants(self._fetch_models(resolved_token), account_type)
             except Exception as exc:  # noqa: BLE001 - try the next account for any upstream failure
                 last_error = exc
         if last_error is not None:
@@ -177,6 +233,16 @@ class ModelCatalogService:
             for account_type in sorted(self._models_by_account_type):
                 for model_id, item in self._models_by_account_type[account_type].items():
                     union.setdefault(model_id, dict(item))
+            for model_id, item in union.items():
+                item["account_types"] = sorted(
+                    account_type
+                    for account_type, models in self._models_by_account_type.items()
+                    if model_id in models
+                )
+                if model_id == "gpt-6":
+                    item["display_name"] = "GPT-6（自动分配）"
+                elif model_id in GPT6_VARIANT_MODELS:
+                    item["display_name"] = f"GPT-6 {model_id.rsplit('-', 1)[1].title()}"
         return {
             "object": "list",
             "data": [union[model_id] for model_id in sorted(union)],
@@ -195,6 +261,31 @@ class ModelCatalogService:
                 account_types=account_types,
                 allow_anonymous=model in self._anonymous_models,
             )
+
+    def upstream_model_for_account(self, model: str, access_token: str) -> str:
+        """Resolve a public variant on the selected account, without downgrade.
+
+        Re-evaluate for every retry: one account may advertise a native slug,
+        while another exposes the same variant through the shared Web slug.
+        """
+        if model not in GPT6_VARIANT_MODELS:
+            return model
+        self._ensure_catalog()
+        account = self._accounts.get_account(access_token) if access_token else None
+        with self._lock:
+            if account is not None:
+                account_type = self._accounts._normalize_account_type(account.get("type"))
+                item = self._models_by_account_type.get(account_type or "", {}).get(model)
+                if account.get("status") in {"禁用", "异常"}:
+                    item = None
+            else:
+                # Anonymous access is allowed only for a genuinely native slug.
+                item = self._anonymous_models.get(model) if not access_token else None
+            if item is None:
+                raise ModelUnavailableError(
+                    f"model {model!r} is not available to the selected account"
+                )
+            return str(item.get("upstream_model") or model)
 
 
 model_catalog_service = ModelCatalogService(account_service)

@@ -884,7 +884,7 @@ function AccountsPageContent() {
                       void navigator.clipboard.writeText(model.id);
                       toast.success("模型名已复制");
                     }}
-                    title={`点击复制 ${model.id}`}
+                    title={`点击复制 ${model.id}${model.account_types?.length ? ` · 账号：${model.account_types.join(" / ")}` : ""}`}
                   >
                     <img
                       src="/openai.svg"
@@ -893,6 +893,14 @@ function AccountsPageContent() {
                       className="mr-1.5 size-3.5 shrink-0"
                     />
                     {model.id}
+                    {model.display_name && model.display_name !== model.id ? (
+                      <span className="ml-1.5 text-stone-400">{model.display_name}</span>
+                    ) : null}
+                    {(model.id === "gpt-6-sol" || model.id === "gpt-6-luna") && model.account_types?.length ? (
+                      <span className="ml-1.5 rounded bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-500">
+                        {model.account_types.map((type) => type === "free" ? "Free" : type).join(" / ")}
+                      </span>
+                    ) : null}
                   </button>
                 ))
               ) : isLoadingModels ? (

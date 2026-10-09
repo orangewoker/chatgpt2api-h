@@ -205,7 +205,11 @@ Authorization: Bearer <auth-key>
 <summary><code>GET /v1/models</code></summary>
 <br>
 
-返回当前暴露的图片模型列表。
+返回当前账号池暴露的文本和图片模型列表。
+
+v1.8.4 起，Plus/Free 混合账号池可分别选择 `gpt-6-sol` / `gpt-6-luna`。
+当上游只返回通用 `gpt-6` 时，这两个 ID 是本服务的账号路由别名；
+`gpt-6` 仍保留自动分配。具体映射与原生模型优先规则参见 [GPT-6 账号路由说明](docs/gpt6-model-routing.md)。
 
 ```bash
 curl http://localhost:8000/v1/models \

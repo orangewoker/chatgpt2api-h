@@ -56,6 +56,10 @@ export type Model = {
   permission: unknown[];
   root: string;
   parent: string | null;
+  display_name?: string;
+  account_types?: string[];
+  upstream_model?: string;
+  routing_basis?: "upstream_title" | "account_plan";
 };
 
 type AccountListResponse = {

@@ -2758,6 +2758,8 @@ class OpenAIBackendAPI:
                 "permission": [],
                 "root": slug,
                 "parent": None,
+                "title": str(item.get("title") or ""),
+                "description": str(item.get("description") or ""),
             })
         data.sort(key=lambda item: item["id"])
         return {"object": "list", "data": data}

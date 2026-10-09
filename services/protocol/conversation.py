@@ -705,12 +705,19 @@ def conversation_events(
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = is_supported_image_model(model)
+    upstream_model = model
+    if not image_model:
+        from services.model_service import model_catalog_service
+
+        upstream_model = model_catalog_service.upstream_model_for_account(
+            model, str(getattr(backend, "access_token", "") or ""),
+        )
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
     final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, quality)) if image_model else prompt
     payloads = backend.stream_conversation(
         messages=normalized,
-        model=model,
+        model=upstream_model,
         prompt=final_prompt,
         images=images if image_model else None,
         system_hints=["picture_v2"] if image_model else None,

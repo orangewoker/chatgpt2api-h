@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ImagePlus, LoaderCircle, Send, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { fetchModels, type Model } from "@/lib/api";
 import { httpRequest } from "@/lib/request";
 
 import { pretty, type ChatCompletionResponse, type ChatContentPart, type ChatMessage } from "./types";
@@ -71,6 +72,7 @@ function messageImages(message: ChatMessage): string[] {
 
 export function ChatPanel() {
   const [model, setModel] = useState("auto");
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [input, setInput] = useState("你好，先记住我的项目叫 chatgpt2api。");
   const [selectedImages, setSelectedImages] = useState<SelectedImage[]>([]);
@@ -78,6 +80,18 @@ export function ChatPanel() {
   const [raw, setRaw] = useState<ChatCompletionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModels().then((result) => {
+      if (!cancelled) {
+        setAvailableModels(result.data.filter((item) => !item.id.includes("gpt-image")));
+      }
+    }).catch(() => {
+      // Model discovery must not prevent manual requests if the upstream is down.
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleImagesChange = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -138,7 +152,15 @@ export function ChatPanel() {
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_160px]">
             <div className="space-y-2">
               <Label htmlFor="chat-model">Model</Label>
-              <Input id="chat-model" value={model} onChange={(event) => setModel(event.target.value)} className="rounded-md border-stone-200/70 bg-transparent shadow-none dark:border-white/10" />
+              <Input id="chat-model" list="chat-model-options" value={model} onChange={(event) => setModel(event.target.value)} className="rounded-md border-stone-200/70 bg-transparent shadow-none dark:border-white/10" />
+              <datalist id="chat-model-options">
+                {availableModels.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.display_name || item.id}{item.account_types?.length ? ` · ${item.account_types.join(" / ")}` : ""}
+                  </option>
+                ))}
+              </datalist>
+              <p className="text-xs text-stone-400">Sol / Luna 按账号路由；gpt-6 保持自动分配。</p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="chat-reasoning-effort">思考强度</Label>
