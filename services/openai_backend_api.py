@@ -25,10 +25,18 @@ from PIL import Image
 from services.account_service import account_service
 from services.config import config
 from services.proxy_service import proxy_settings
-from utils.helper import UpstreamHTTPError, ensure_ok, is_web_image_model, iter_sse_payloads, new_uuid, split_image_model
+from services.sentinel_solver_client import solve_turnstile, solver_user_agent
+from utils.helper import (
+    UpstreamHTTPError,
+    codex_tool_model,
+    ensure_ok,
+    iter_sse_payloads,
+    new_uuid,
+    resolve_image_upstream_model,
+)
+from utils.image_fit import fit_web_reference_images
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
-from utils.turnstile import solve_turnstile_token
 
 
 class InvalidAccessTokenError(RuntimeError):
@@ -67,10 +75,11 @@ class ChatRequirements:
     raw_finalize: Optional[Dict[str, Any]] = None
 
 
+DEFAULT_IMPERSONATE = "chrome146"
+LEGACY_IMPERSONATES = {"chrome110"}
 DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
-CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 CODEX_RESPONSES_MODEL = "gpt-5.5"
 SEARCH_MODEL = "gpt-5-5"
 SEARCH_TIMEOUT_SECS = 300.0
@@ -270,7 +279,9 @@ class OpenAIBackendAPI:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
         )
-        fp.setdefault("impersonate", "chrome110")
+        if fp.get("impersonate") in LEGACY_IMPERSONATES:
+            fp.pop("impersonate")
+        fp.setdefault("impersonate", DEFAULT_IMPERSONATE)
         fp.setdefault("oai-device-id", new_uuid())
         fp.setdefault("oai-session-id", new_uuid())
         fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"')
@@ -415,7 +426,7 @@ class OpenAIBackendAPI:
             proof_token = build_proof_token(
                 proof_info.get("seed", ""),
                 proof_info.get("difficulty", ""),
-                self.user_agent,
+                self._sentinel_user_agent(),
                 script_sources=self.pow_script_sources,
                 data_build=self.pow_data_build,
             )
@@ -423,7 +434,7 @@ class OpenAIBackendAPI:
         turnstile_token = ""
         turnstile_info = data.get("turnstile") or {}
         if turnstile_info.get("required") and turnstile_info.get("dx"):
-            turnstile_token = solve_turnstile_token(turnstile_info["dx"], source_p) or ""
+            turnstile_token = solve_turnstile(turnstile_info["dx"], source_p)
 
         return ChatRequirements(
             token=data.get("token", ""),
@@ -576,14 +587,8 @@ class OpenAIBackendAPI:
 
     def _image_model_settings(self, model: str) -> tuple[str, str]:
         """把标准图片模型名映射为上游模型及思考强度。"""
-        _, base_model = split_image_model(model)
-        if not base_model:
-            return "auto", ""
-        if is_web_image_model(base_model):
-            upstream_model = config.default_upstream_model_name
-        elif base_model == CODEX_IMAGE_MODEL:
-            upstream_model = base_model
-        else:
+        upstream_model = resolve_image_upstream_model(model, config.default_upstream_model_name)
+        if not upstream_model:
             return "auto", ""
         model_name, separator, suffix = upstream_model.rpartition("-")
         if separator and suffix.lower() in {"standard", "extended", "max"}:
@@ -791,6 +796,7 @@ class OpenAIBackendAPI:
             images: list[str] | None = None,
             size: str | None = None,
             quality: str = "auto",
+            model: str = "",
     ) -> Iterator[Dict[str, Any]]:
         if not self.access_token:
             raise RuntimeError("access_token is required for codex image endpoints")
@@ -803,7 +809,7 @@ class OpenAIBackendAPI:
             "input": self._codex_image_input(prompt, images or []),
             "tools": [{
                 "type": "image_generation",
-                "model": "gpt-image-2",
+                "model": codex_tool_model(model),
                 "action": "edit" if images else "generate",
                 "size": str(size or "1024x1024"),
                 "quality": str(quality or "auto"),
@@ -2619,7 +2625,23 @@ class OpenAIBackendAPI:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
         self._report_progress("uploading")
-        references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
+        payloads = images
+        if images and (config.image_ref_fit_enabled or config.image_req_fit_enabled):
+            try:
+                decoded = [self._decode_image_base64(image) for image in images]
+                fitted = fit_web_reference_images(
+                    decoded,
+                    prompt,
+                    ref_enabled=config.image_ref_fit_enabled,
+                    ref_budget=config.image_ref_fit_budget_bytes,
+                    req_enabled=config.image_req_fit_enabled,
+                    req_budget=config.image_req_fit_budget_bytes,
+                    max_edge=config.image_ref_fit_max_edge,
+                )
+                payloads = [base64.b64encode(item).decode("ascii") for item in fitted]
+            except Exception as exc:
+                logger.warning({"event": "image_ref_fit_skipped", "error": str(exc)})
+        references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(payloads, start=1)]
         self._report_progress("bootstrapping")
         self._bootstrap()
         self._report_progress("getting_token")
@@ -2676,10 +2698,15 @@ class OpenAIBackendAPI:
         if not self.pow_script_sources:
             self.pow_script_sources = [DEFAULT_POW_SCRIPT]
 
+    def _sentinel_user_agent(self) -> str:
+        """requirements 和 PoW 里的 UA，与求解 Turnstile 的页面保持一致。"""
+        return solver_user_agent() or self.user_agent
+
     def _get_chat_requirements(self) -> ChatRequirements:
         """获取当前模式对话所需的 sentinel token（prepare + finalize 两步流程）。"""
         base = "/backend-api/sentinel/chat-requirements" if self.access_token else "/backend-anon/sentinel/chat-requirements"
-        p_token = build_legacy_requirements_token(self.user_agent, self.pow_script_sources, self.pow_data_build)
+        sentinel_user_agent = self._sentinel_user_agent()
+        p_token = build_legacy_requirements_token(sentinel_user_agent, self.pow_script_sources, self.pow_data_build)
 
         prepare_path = base + "/prepare"
         response = self.session.post(
@@ -2700,7 +2727,7 @@ class OpenAIBackendAPI:
             proof_token = build_proof_token(
                 proof_info.get("seed", ""),
                 proof_info.get("difficulty", ""),
-                self.user_agent,
+                sentinel_user_agent,
                 script_sources=self.pow_script_sources,
                 data_build=self.pow_data_build,
             )
@@ -2708,7 +2735,7 @@ class OpenAIBackendAPI:
         turnstile_token = ""
         turnstile_info = prepare_data.get("turnstile") or {}
         if turnstile_info.get("required") and turnstile_info.get("dx"):
-            turnstile_token = solve_turnstile_token(turnstile_info["dx"], p_token) or ""
+            turnstile_token = solve_turnstile(turnstile_info["dx"], p_token)
 
         finalize_path = base + "/finalize"
         response = self.session.post(
@@ -2716,8 +2743,8 @@ class OpenAIBackendAPI:
             headers=self._headers(finalize_path, {"Content-Type": "application/json"}),
             json={
                 "prepare_token": prepare_data.get("prepare_token", ""),
-                "proof_token": proof_token,
-                "turnstile_token": turnstile_token,
+                "proofofwork": proof_token,
+                "turnstile": turnstile_token,
             },
             timeout=30,
         )
@@ -2773,8 +2800,6 @@ class OpenAIBackendAPI:
                 "permission": [],
                 "root": slug,
                 "parent": None,
-                "title": str(item.get("title") or ""),
-                "description": str(item.get("description") or ""),
             })
         data.sort(key=lambda item: item["id"])
         return {"object": "list", "data": data}
