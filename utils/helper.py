@@ -14,24 +14,31 @@ from fastapi import HTTPException
 from services.proxy_service import proxy_settings
 from utils.log import logger
 
-# Keep the public aliases separate from the Codex-only model.  GPT Image 2.5
-# has two official API variants (Sunburst and Flare); the short alias is kept
-# for clients that only expose a single image-model selector.
-WEB_IMAGE_MODELS = {
-    "gpt-image-2",
+WEB_IMAGE_2_5_MODELS = {
     "gpt-image-2.5",
-    "gpt-image-2.5-sunburst",
     "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
 }
-WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
-    r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
-)
-BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2"}
-IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
+WEB_IMAGE_MODELS = {"gpt-image-2"} | WEB_IMAGE_2_5_MODELS
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
+CODEX_IMAGE_MODELS = {
+    "codex-gpt-image-2",
+    "codex-gpt-image-2.5",
+    "codex-gpt-image-2.5-flare",
+    "codex-gpt-image-2.5-sunburst",
+}
+CODEX_TOOL_MODELS = {
+    "codex-gpt-image-2": "gpt-image-2",
+    "codex-gpt-image-2.5": "gpt-image-2.5-flare",
+    "codex-gpt-image-2.5-flare": "gpt-image-2.5-flare",
+    "codex-gpt-image-2.5-sunburst": "gpt-image-2.5-sunburst",
+}
+IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | CODEX_IMAGE_MODELS
 PREFIXED_CODEX_IMAGE_MODELS = {
-    f"{plan_type}-{CODEX_IMAGE_MODEL}"
+    f"{plan_type}-{model}"
     for plan_type in IMAGE_MODEL_PLAN_TYPES
+    for model in CODEX_IMAGE_MODELS
 }
 IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
 PUBLIC_IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
@@ -122,13 +129,13 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
     normalized = str(model or "").strip().lower()
     if not normalized:
         return None, None
-    if normalized in BASE_IMAGE_MODELS or WEB_IMAGE_MODEL_SNAPSHOT_RE.fullmatch(normalized):
+    if normalized in BASE_IMAGE_MODELS:
         return None, normalized
     for plan_type in IMAGE_MODEL_PLAN_TYPES:
         prefix = f"{plan_type}-"
         if normalized.startswith(prefix):
             base_model = normalized[len(prefix):]
-            if base_model == CODEX_IMAGE_MODEL:
+            if base_model in CODEX_IMAGE_MODELS:
                 return plan_type, base_model
     return None, None
 
@@ -138,14 +145,27 @@ def is_supported_image_model(model: object) -> bool:
     return base_model is not None
 
 
-def is_web_image_model(model: object) -> bool:
-    normalized = str(model or "").strip().lower()
-    return normalized in WEB_IMAGE_MODELS or WEB_IMAGE_MODEL_SNAPSHOT_RE.fullmatch(normalized) is not None
-
-
 def is_codex_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
-    return base_model == CODEX_IMAGE_MODEL
+    return base_model in CODEX_IMAGE_MODELS
+
+
+def resolve_image_upstream_model(model: object, default_upstream: str) -> str | None:
+    """Map a public image model to the ChatGPT conversation model slug."""
+    _, base_model = split_image_model(model)
+    if not base_model:
+        return None
+    if base_model == "gpt-image-2":
+        return str(default_upstream or "").strip() or "gpt-5-5"
+    if base_model in WEB_IMAGE_2_5_MODELS or base_model in CODEX_IMAGE_MODELS:
+        return base_model
+    return None
+
+
+def codex_tool_model(model: object) -> str:
+    """Map a public Codex image model to the image_generation tool model."""
+    _, base_model = split_image_model(model)
+    return CODEX_TOOL_MODELS.get(base_model or "", "gpt-image-2")
 
 
 def is_image_chat_request(body: dict[str, object]) -> bool:
@@ -191,14 +211,67 @@ class UpstreamHTTPError(RuntimeError):
         super().__init__(f"{context} failed: status={status_code}, body={body_str}")
 
 
+def is_model_not_found(error: object) -> bool:
+    """True only for an image conversation 404 whose JSON detail is exactly Model not found."""
+    context = ""
+    status_code = 0
+    body: Any = None
+    if isinstance(error, UpstreamHTTPError):
+        context = str(error.context or "")
+        status_code = int(error.status_code or 0)
+        body = error.body
+    else:
+        text = str(error or "")
+        if "status=404" not in text or "/backend-api/f/conversation failed:" not in text:
+            return False
+        if "/backend-api/f/conversation/prepare failed:" in text:
+            return False
+        marker = "body="
+        body_text = text.split(marker, 1)[1] if marker in text else ""
+        try:
+            body = json.loads(body_text) if body_text else None
+        except (json.JSONDecodeError, ValueError):
+            return False
+        return isinstance(body, dict) and body.get("detail") == "Model not found"
+    if status_code != 404 or not context.endswith("/conversation"):
+        return False
+    if isinstance(body, str):
+        try:
+            body = json.loads(body) if body else None
+        except (json.JSONDecodeError, ValueError):
+            return False
+    return isinstance(body, dict) and body.get("detail") == "Model not found"
+
+
+def is_conversation_413(error: object) -> bool:
+    """True only for POST /backend-api/f/conversation 413, not /prepare or /files."""
+    if isinstance(error, UpstreamHTTPError):
+        return error.status_code == 413 and str(error.context or "").endswith("/conversation")
+    text = str(error or "")
+    return "status=413" in text and "/conversation failed:" in text
+
+
 def ensure_ok(response: requests.Response, context: str) -> None:
     if 200 <= response.status_code < 300:
         return
     body: Any = response.text
-    try:
-        body = response.json()
-    except Exception:
-        pass
+    if not body:
+        try:
+            chunks = []
+            for chunk in response.iter_content():
+                if isinstance(chunk, str):
+                    chunk = chunk.encode()
+                if chunk:
+                    chunks.append(chunk)
+            if chunks:
+                body = b"".join(chunks).decode("utf-8", errors="replace")
+        except Exception:
+            body = response.text
+    if isinstance(body, str) and body:
+        try:
+            body = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            pass
     retry_after_header = response.headers.get("Retry-After") if hasattr(response, "headers") else None
     retry_after: int | None = None
     if retry_after_header is not None:
