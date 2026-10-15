@@ -16,11 +16,9 @@ WORKDIR /app
 
 COPY requirements.txt ./
 # 只安装完整 Chromium（新版无头模式），headless shell 过不了 Cloudflare
-RUN pip install --no-cache-dir -r requirements.txt \
-    && playwright install --with-deps --no-shell chromium \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py vm.js ./
+COPY app.py vm.js entrypoint.sh ./
 
 EXPOSE 8080
-CMD ["python", "app.py"]
+ENTRYPOINT ["/app/entrypoint.sh"]
