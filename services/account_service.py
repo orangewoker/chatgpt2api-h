@@ -54,6 +54,7 @@ class AccountService:
         self._index = 0
         self._accounts = self._load_accounts()
         self._image_inflight: dict[str, int] = {}
+        self._image_unavailable_until: dict[str, float] = {}
         self._token_aliases: dict[str, str] = {}
         self._cumulative_total = self._load_cumulative_total()
 
@@ -903,6 +904,7 @@ class AccountService:
                and self._account_matches_source_type(item, source_type)
                and (token := item.get("access_token") or "")
                and token not in excluded
+               and self._image_unavailable_until.get(token, 0.0) <= time.monotonic()
         ]
 
     def _list_available_candidate_tokens(
@@ -940,6 +942,13 @@ class AccountService:
                     self._image_inflight[access_token] = int(self._image_inflight.get(access_token, 0)) + 1
                     return access_token
                 self._image_slot_condition.wait(timeout=1.0)
+
+    def sideline_image_account(self, access_token: str, seconds: int) -> None:
+        """仅在当前进程内暂避图片账号，保留额度和账号状态。"""
+        with self._image_slot_condition:
+            access_token = self._resolve_access_token_locked(access_token)
+            self._image_unavailable_until[access_token] = time.monotonic() + seconds
+            self._image_slot_condition.notify_all()
 
     def release_image_slot(self, access_token: str) -> None:
         if not access_token:
