@@ -266,7 +266,18 @@ class ModelCatalogService:
                 allow_anonymous=model in self._anonymous_models,
             )
 
-    def image_upstream_model(self, model: str) -> str:
+    @staticmethod
+    def _model_key(value: object) -> str:
+        """Normalize slugs and display names for catalog lookup.
+
+        The web catalog has used all of ``gpt-5-6``, ``gpt-5.6`` and display
+        names such as ``GPT-5.6 sol`` for the same model family.  Comparing a
+        compact alphanumeric key lets the resolver accept those values while
+        still returning the catalog's real slug.
+        """
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+    def image_upstream_model(self, model: str = "", access_token: str = "") -> str:
         """Resolve a configured web-image upstream slug to an active catalog slug.
 
         Image endpoints historically sent the user-configured upstream model.
@@ -278,24 +289,75 @@ class ModelCatalogService:
         configured = str(model or "").strip()
         if not configured:
             return configured
+
+        base, separator, suffix = configured.rpartition("-")
+        effort_suffix = ""
+        if separator and suffix.lower() in {"standard", "extended", "max"}:
+            configured = base.strip()
+            effort_suffix = f"-{suffix.lower()}"
+
         self._ensure_catalog()
+
+        # Prefer the catalog belonging to the account which will actually
+        # generate the image.  A global union can contain a Sol-only alias
+        # belonging to another account type and would otherwise route the
+        # request to an invalid slug for the selected account.
+        account_models: dict[str, dict[str, Any]] = {}
+        if access_token:
+            account = self._accounts.get_account(access_token)
+            if isinstance(account, dict) and account.get("status") not in {"禁用", "异常"}:
+                account_type = self._accounts._normalize_account_type(account.get("type"))
+                if account_type:
+                    with self._lock:
+                        account_models = dict(self._models_by_account_type.get(account_type, {}))
+
         with self._lock:
-            if configured in self._anonymous_models or any(
-                configured in models for models in self._models_by_account_type.values()
-            ):
-                return configured
+            catalog: dict[str, dict[str, Any]] = account_models
+            if not catalog:
+                catalog = {
+                    model_id: dict(item)
+                    for model_id, item in self._anonymous_models.items()
+                }
+                for models in self._models_by_account_type.values():
+                    for model_id, item in models.items():
+                        catalog.setdefault(model_id, dict(item))
+
+            configured_key = self._model_key(configured)
+            # Match the real id first, then upstream metadata and finally the
+            # title/display name exposed by ChatGPT's model endpoint.
+            for model_id, item in catalog.items():
+                candidates = (model_id, item.get("id"), item.get("upstream_model"))
+                if configured_key and any(self._model_key(value) == configured_key for value in candidates):
+                    return str(item.get("upstream_model") or model_id) + effort_suffix
+            for model_id, item in catalog.items():
+                titles = (item.get("title"), item.get("display_name"), item.get("name"))
+                if configured_key and any(self._model_key(value) == configured_key for value in titles):
+                    return str(item.get("upstream_model") or model_id) + effort_suffix
+
             for candidate in IMAGE_UPSTREAM_FALLBACK_MODELS:
-                if candidate != configured and (
-                    candidate in self._anonymous_models
-                    or any(candidate in models for models in self._models_by_account_type.values())
-                ):
+                item = catalog.get(candidate)
+                if item is None:
+                    candidate_key = self._model_key(candidate)
+                    item = next((entry for model_id, entry in catalog.items()
+                                 if self._model_key(model_id) == candidate_key), None)
+                if item is not None:
+                    resolved = str(item.get("upstream_model") or item.get("id") or candidate)
                     logger.warning({
                         "event": "image_upstream_model_fallback",
                         "configured_model": configured,
-                        "upstream_model": candidate,
+                        "upstream_model": resolved,
                     })
-                    return candidate
-        return configured
+                    return resolved + effort_suffix
+
+            # A retired 5.5 value must never be sent just because the model
+            # catalog is temporarily unavailable.  Keep unknown custom values
+            # intact so a private/forward-compatible upstream slug still works.
+            configured_key = self._model_key(configured)
+            if configured_key in {"gpt55", "gpt55thinking"} or configured_key in {
+                self._model_key(alias) for alias in GPT6_VARIANT_MODELS
+            }:
+                return "gpt-6" + effort_suffix
+        return configured + effort_suffix
 
     def upstream_model_for_account(self, model: str, access_token: str) -> str:
         """Resolve a public variant on the selected account, without downgrade.

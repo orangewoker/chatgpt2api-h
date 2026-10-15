@@ -69,14 +69,14 @@ DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
-CODEX_RESPONSES_MODEL = "gpt-5.5"
-SEARCH_MODEL = "gpt-5-5"
+CODEX_RESPONSES_MODEL = "gpt-6"
+SEARCH_MODEL = "gpt-6"
 SEARCH_TIMEOUT_SECS = 300.0
 SEARCH_POLL_INTERVAL_SECS = 3.0
 SEARCH_DONE_STATUS = {"finished_successfully", "finished_partial_completion"}
 SEARCH_CONVERSATION_ID_RE = re.compile(r'"conversation_id"\s*:\s*"([^"]+)"')
 SEARCH_URL_RE = re.compile(r"https?://[^\s\"'<>）)\]}]+")
-EDITABLE_FILE_MODEL = "gpt-5-5-thinking"
+EDITABLE_FILE_MODEL = "gpt-6"
 EDITABLE_FILE_THINKING_EFFORT = "extended"
 EDITABLE_FILE_TIMEOUT_SECS = 1200.0
 EDITABLE_FILE_POLL_INTERVAL_SECS = 5.0
@@ -572,9 +572,17 @@ class OpenAIBackendAPI:
             # with an empty-body 404.
             from services.model_service import model_catalog_service
 
-            upstream_model = model_catalog_service.image_upstream_model(
-                config.default_upstream_model_name,
-            )
+            try:
+                upstream_model = model_catalog_service.image_upstream_model(
+                    config.default_upstream_model_name,
+                    access_token=str(getattr(self, "access_token", "") or ""),
+                )
+            except TypeError:
+                # Keep compatibility with injected catalog implementations
+                # used by integrations which still expose the old signature.
+                upstream_model = model_catalog_service.image_upstream_model(
+                    config.default_upstream_model_name,
+                )
         elif base_model == CODEX_IMAGE_MODEL:
             upstream_model = base_model
         else:

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.8.6 - 2026-10-15
+
++ [修复] 生图上游模型按实际账号目录解析，兼容 `GPT-5.6 sol` 等显示名和本地别名，避免已下线的 5.5 模型触发 `/backend-api/f/conversation` 空响应 404。
++ [修复] 搜索、PPT、PSD 和 Codex Responses 默认跳板模型切换为 `gpt-6`。
+
 ## 1.8.5 - 2026-10-15
 
 + [修复] 图片上游模型名默认从已下线的 `gpt-5-5` 更新为当前可用的 `gpt-5-6`，避免 `/backend-api/f/conversation` 返回空 body 404。
