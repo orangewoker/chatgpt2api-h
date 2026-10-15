@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.8.7 - 2026-10-15
+
++ [修复] 生图准备请求和正式会话共用 `client-created-root` 父消息 ID，适配 ChatGPT 最新图片会话接口，避免 `/backend-api/f/conversation` 返回空响应 404。
++ [修复] 默认上游模型改为 `auto`，从当前账号会话初始化信息动态获取可用模型 slug。
++ [更新] 同步最新 ChatGPT Web 客户端版本标识，并增强空响应体错误提取。
+
 ## 1.8.6 - 2026-10-15
 
 + [修复] 生图上游模型按实际账号目录解析，兼容 `GPT-5.6 sol` 等显示名和本地别名，避免已下线的 5.5 模型触发 `/backend-api/f/conversation` 空响应 404。

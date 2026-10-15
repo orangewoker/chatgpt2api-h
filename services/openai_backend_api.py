@@ -65,7 +65,7 @@ class ChatRequirements:
     raw_finalize: Optional[Dict[str, Any]] = None
 
 
-DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
+DEFAULT_CLIENT_VERSION = "prod-ad7d81d8f7e3f450d1b5e94016615ce964f80dc6"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
@@ -359,7 +359,7 @@ class OpenAIBackendAPI:
             "type": plan_type,
             "quota": quota,
             "limits_progress": limits_progress,
-            "default_model_slug": init_payload.get("default_model_slug"),
+            "default_model_slug": init_payload.get("default_model_slug") or init_payload.get("intended_default_model_slug"),
             "restore_at": restore_at,
             "status": "限流" if quota == 0 else "正常",
         }
@@ -561,32 +561,113 @@ class OpenAIBackendAPI:
             payload["thinking_effort"] = normalized_effort
         return payload
 
+    def _resolve_dynamic_upstream_model(self) -> str:
+        """Resolve the current account's real ChatGPT Web model slug."""
+        configured = str(config.default_upstream_model_name or "").strip()
+        configured_lower = configured.lower()
+        if configured and configured_lower not in {"auto", "gpt-5-5", "gpt-5.5"}:
+            from services.model_service import model_catalog_service
+
+            try:
+                return model_catalog_service.image_upstream_model(
+                    configured,
+                    access_token=str(getattr(self, "access_token", "") or ""),
+                )
+            except TypeError:
+                return model_catalog_service.image_upstream_model(configured)
+
+        cached = str(getattr(self, "_dynamic_upstream_model", "") or "").strip()
+        if cached and cached.lower() not in {"auto", "gpt-5-5", "gpt-5.5"}:
+            return cached
+
+        account_model = str((getattr(self, "account", {}) or {}).get("default_model_slug") or "").strip()
+        if account_model and account_model.lower() not in {"auto", "gpt-5-5", "gpt-5.5"}:
+            self._dynamic_upstream_model = account_model
+            return account_model
+
+        if getattr(self, "access_token", ""):
+            try:
+                init_data = self._get_conversation_init()
+                slug = str(
+                    init_data.get("default_model_slug")
+                    or init_data.get("intended_default_model_slug")
+                    or ""
+                ).strip()
+                if slug and slug.lower() not in {"auto", "gpt-5-5", "gpt-5.5"}:
+                    self._dynamic_upstream_model = slug
+                    account_service.update_account(
+                        self.access_token,
+                        {"default_model_slug": slug},
+                        quiet=True,
+                    )
+                    return slug
+            except Exception as exc:  # noqa: BLE001 - catalog fallback remains available
+                logger.debug({
+                    "event": "dynamic_upstream_model_init_error",
+                    "error_type": type(exc).__name__,
+                })
+
+        try:
+            from services.model_service import model_catalog_service
+
+            catalog_model = model_catalog_service.image_upstream_model(
+                "auto",
+                access_token=str(getattr(self, "access_token", "") or ""),
+            )
+            if catalog_model and catalog_model.lower() != "auto":
+                self._dynamic_upstream_model = catalog_model
+                return catalog_model
+        except TypeError:
+            try:
+                catalog_model = model_catalog_service.image_upstream_model("auto")
+                if catalog_model and catalog_model.lower() != "auto":
+                    self._dynamic_upstream_model = catalog_model
+                    return catalog_model
+            except Exception:
+                pass
+        except Exception as exc:  # noqa: BLE001 - continue to the direct API fallback
+            logger.debug({
+                "event": "dynamic_upstream_model_catalog_error",
+                "error_type": type(exc).__name__,
+            })
+
+        try:
+            models_data = self.list_models()
+            model_ids = {
+                str(item.get("id") or "").strip()
+                for item in models_data.get("data", [])
+                if isinstance(item, dict)
+            }
+            for preferred in ("gpt-6", "gpt-5-6"):
+                if preferred in model_ids:
+                    self._dynamic_upstream_model = preferred
+                    return preferred
+            for model_id in sorted(model_ids):
+                if model_id and model_id.lower() not in {"auto", "gpt-5-5", "gpt-5.5"}:
+                    self._dynamic_upstream_model = model_id
+                    return model_id
+        except Exception as exc:  # noqa: BLE001 - final auto fallback is intentional
+            logger.debug({
+                "event": "dynamic_upstream_model_models_error",
+                "error_type": type(exc).__name__,
+            })
+
+        return "auto"
+
     def _image_model_settings(self, model: str) -> tuple[str, str]:
         """把标准图片模型名映射为上游模型及思考强度。"""
         _, base_model = split_image_model(model)
         if not base_model:
-            return "auto", ""
+            return self._resolve_dynamic_upstream_model(), ""
         if is_web_image_model(base_model):
             # Resolve against the live catalog so a retired configured slug is
             # replaced before prepare/conversation, instead of failing there
             # with an empty-body 404.
-            from services.model_service import model_catalog_service
-
-            try:
-                upstream_model = model_catalog_service.image_upstream_model(
-                    config.default_upstream_model_name,
-                    access_token=str(getattr(self, "access_token", "") or ""),
-                )
-            except TypeError:
-                # Keep compatibility with injected catalog implementations
-                # used by integrations which still expose the old signature.
-                upstream_model = model_catalog_service.image_upstream_model(
-                    config.default_upstream_model_name,
-                )
+            upstream_model = self._resolve_dynamic_upstream_model()
         elif base_model == CODEX_IMAGE_MODEL:
             upstream_model = base_model
         else:
-            return "auto", ""
+            return self._resolve_dynamic_upstream_model(), ""
         self._last_image_upstream_model = upstream_model
         model_name, separator, suffix = upstream_model.rpartition("-")
         if separator and suffix.lower() in {"standard", "extended", "max"}:
@@ -877,14 +958,20 @@ class OpenAIBackendAPI:
             retry_after = int(retry_after_header) if str(retry_after_header or "").isdigit() else None
             raise UpstreamHTTPError(path, error.code, body, retry_after=retry_after) from error
 
-    def _prepare_image_conversation(self, prompt: str, requirements: ChatRequirements, model: str) -> str:
+    def _prepare_image_conversation(
+            self,
+            prompt: str,
+            requirements: ChatRequirements,
+            model: str,
+            parent_message_id: str = "client-created-root",
+    ) -> str:
         """为图片生成准备 conduit token。"""
         path = "/backend-api/f/conversation/prepare"
         upstream_model, thinking_effort = self._image_model_settings(model)
         payload = {
             "action": "next",
             "fork_from_shared_post": False,
-            "parent_message_id": new_uuid(),
+            "parent_message_id": parent_message_id,
             "model": upstream_model,
             "client_prepare_state": "success",
             "timezone_offset_min": -480,
@@ -985,8 +1072,15 @@ class OpenAIBackendAPI:
             "height": height,
         }
 
-    def _start_image_generation(self, prompt: str, requirements: ChatRequirements, conduit_token: str, model: str,
-                                references: Optional[list[Dict[str, Any]]] = None) -> requests.Response:
+    def _start_image_generation(
+            self,
+            prompt: str,
+            requirements: ChatRequirements,
+            conduit_token: str,
+            model: str,
+            references: Optional[list[Dict[str, Any]]] = None,
+            parent_message_id: str = "client-created-root",
+    ) -> requests.Response:
         """启动图片生成或编辑的 SSE 请求。"""
         upstream_model, thinking_effort = self._image_model_settings(model)
         references = references or []
@@ -1025,7 +1119,7 @@ class OpenAIBackendAPI:
                 "content": content,
                 "metadata": metadata,
             }],
-            "parent_message_id": new_uuid(),
+            "parent_message_id": parent_message_id,
             "model": upstream_model,
             "client_prepare_state": "sent",
             "timezone_offset_min": -480,
@@ -2626,9 +2720,22 @@ class OpenAIBackendAPI:
         self._report_progress("getting_token")
         requirements = self._get_chat_requirements()
         self._report_progress("preparing_conversation")
-        conduit_token = self._prepare_image_conversation(prompt, requirements, model)
+        parent_message_id = "client-created-root"
+        conduit_token = self._prepare_image_conversation(
+            prompt,
+            requirements,
+            model,
+            parent_message_id=parent_message_id,
+        )
         self._report_progress("starting_generation")
-        response = self._start_image_generation(prompt, requirements, conduit_token, model, references)
+        response = self._start_image_generation(
+            prompt,
+            requirements,
+            conduit_token,
+            model,
+            references,
+            parent_message_id=parent_message_id,
+        )
         self._report_progress("generating")
         yield from self._iter_sse_payloads_capped(response, float(config.image_poll_timeout_secs))
 

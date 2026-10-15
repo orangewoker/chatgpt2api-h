@@ -511,7 +511,10 @@ class ConfigStore:
 
     @property
     def default_upstream_model_name(self) -> str:
-        return str(self.data.get("default_upstream_model_name") or "gpt-6").strip()
+        value = str(self.data.get("default_upstream_model_name") or "auto").strip()
+        if value.lower() in {"gpt-5-5", "gpt-5.5"}:
+            return "auto"
+        return value
 
     @property
     def default_thinking_effort(self) -> str:
