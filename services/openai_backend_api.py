@@ -281,6 +281,13 @@ class OpenAIBackendAPI:
                 return int(item.get("remaining") or 0), str(item.get("reset_after") or "") or None
         return 0, None
 
+    @staticmethod
+    def _has_image_quota_entry(limits_progress: list[Any]) -> bool:
+        return any(
+            isinstance(item, dict) and item.get("feature_name") == "image_gen"
+            for item in limits_progress
+        )
+
     def _raise_on_error(self, response: Any, path: str) -> None:
         if response.status_code == 401:
             raise InvalidAccessTokenError(f"token invalidated ({path})")
@@ -358,6 +365,7 @@ class OpenAIBackendAPI:
             "user_id": me_payload.get("id"),
             "type": plan_type,
             "quota": quota,
+            "image_quota_known": self._has_image_quota_entry(limits_progress),
             "limits_progress": limits_progress,
             "default_model_slug": init_payload.get("default_model_slug") or init_payload.get("intended_default_model_slug"),
             "restore_at": restore_at,

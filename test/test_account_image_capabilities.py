@@ -168,6 +168,27 @@ class AccountCapabilityTests(unittest.TestCase):
             self.assertEqual(plus_token, "token-plus")
             self.assertEqual(pro_token, "token-pro")
 
+    def test_chatgpt_quota_zero_is_refreshed_before_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service = AccountService(JSONStorageBackend(Path(tmp_dir) / "accounts.json"))
+            service.add_account_items([{"access_token": "free-token", "type": "free", "status": "正常", "quota": 0}])
+
+            def refresh_from_upstream(access_token, event="fetch_remote_info"):
+                service.update_account(access_token, {"status": "正常", "quota": 2}, quiet=True)
+                return service.get_account(access_token)
+
+            service.fetch_remote_info = refresh_from_upstream
+            token = service.get_available_access_token(provider="chatgpt")
+            service.release_image_slot(token)
+            self.assertEqual(token, "free-token")
+
+    def test_chatgpt_unknown_image_quota_is_not_hidden(self) -> None:
+        self.assertTrue(
+            AccountService._is_image_account_available(
+                {"provider": "chatgpt", "status": "正常", "quota": 0, "image_quota_known": False}
+            )
+        )
+
     def test_refresh_accounts_can_remove_invalid_token_without_confirmation_delay(self) -> None:
         original_value = config.data.get("auto_remove_invalid_accounts")
         config.data["auto_remove_invalid_accounts"] = True

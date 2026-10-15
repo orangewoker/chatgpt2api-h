@@ -169,6 +169,14 @@ class AccountService:
         status = account.get("status")
         if status in {"禁用", "异常"}:
             return False
+        if (
+            cls.account_provider(account) == "chatgpt"
+            and account.get("image_quota_known") is False
+        ):
+            # Some Free accounts omit image_gen from conversation/init even
+            # while the image tool remains usable. Let the upstream request
+            # decide instead of hiding the account locally.
+            return True
         if status == "限流":
             restore_at = cls._parse_time(account.get("restore_at"))
             if not (cls.is_external_image_account(account) and restore_at and restore_at <= datetime.now(timezone.utc)):
@@ -284,6 +292,8 @@ class AccountService:
             normalized["type"] = "Gemini"
         normalized["status"] = normalized.get("status") or "正常"
         normalized["quota"] = max(0, int(normalized.get("quota") if normalized.get("quota") is not None else 0))
+        if not isinstance(normalized.get("image_quota_known"), bool):
+            normalized["image_quota_known"] = None
         normalized["quota_mode"] = "external" if provider in {"agnes", "gemini"} else str(normalized.get("quota_mode") or "local")
         normalized["label"] = str(normalized.get("label") or "").strip() or None
         normalized["email"] = normalized.get("email") or None
@@ -993,10 +1003,22 @@ class AccountService:
             provider: str | None = None,
     ) -> list[str]:
         excluded = set(excluded_tokens or set())
+
+        def eligible_for_preflight(account: dict) -> bool:
+            # ChatGPT Web quota is refreshed from conversation/init.  A stale
+            # local quota of zero must not prevent that refresh, especially for
+            # Free accounts whose image quota is exposed asynchronously.
+            if (
+                self.account_provider(account) == "chatgpt"
+                and account.get("status") not in {"禁用", "异常"}
+            ):
+                return True
+            return self._is_image_account_available(account)
+
         return [
             token
             for item in self._accounts.values()
-            if self._is_image_account_available(item)
+            if eligible_for_preflight(item)
                and self._account_matches_plan_type(item, plan_type)
                and self._account_matches_any_plan_type(item, plan_types)
                and self._account_matches_source_type(item, source_type)
