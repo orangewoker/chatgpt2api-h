@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/orangewoker/chatgpt2api:latest
+    image: ghcr.io/orangewoker/chatgpt2api:1.8.4
     container_name: chatgpt2api
     restart: unless-stopped
     ports:
