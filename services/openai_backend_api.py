@@ -567,11 +567,19 @@ class OpenAIBackendAPI:
         if not base_model:
             return "auto", ""
         if is_web_image_model(base_model):
-            upstream_model = config.default_upstream_model_name
+            # Resolve against the live catalog so a retired configured slug is
+            # replaced before prepare/conversation, instead of failing there
+            # with an empty-body 404.
+            from services.model_service import model_catalog_service
+
+            upstream_model = model_catalog_service.image_upstream_model(
+                config.default_upstream_model_name,
+            )
         elif base_model == CODEX_IMAGE_MODEL:
             upstream_model = base_model
         else:
             return "auto", ""
+        self._last_image_upstream_model = upstream_model
         model_name, separator, suffix = upstream_model.rpartition("-")
         if separator and suffix.lower() in {"standard", "extended", "max"}:
             return model_name, suffix.lower()

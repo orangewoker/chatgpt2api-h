@@ -18,6 +18,7 @@ from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeou
 from services.image_upscale import upscale_image_bytes
 from utils.helper import (
     IMAGE_MODELS,
+    UpstreamHTTPError,
     extract_image_from_message_content,
     is_codex_image_model,
     is_supported_image_model,
@@ -1453,6 +1454,24 @@ def _generate_single_image(
                 code="content_policy_violation",
                 account_email=account_email,
                 conversation_id=getattr(exc, "conversation_id", ""),
+            ) from exc
+        except UpstreamHTTPError as exc:
+            account_service.mark_image_result(token, False)
+            logger.warning({
+                "event": "image_upstream_http_error",
+                "endpoint": getattr(exc, "context", ""),
+                "status_code": getattr(exc, "status_code", 0),
+                "public_model": request.model,
+                "upstream_model": str(getattr(backend, "_last_image_upstream_model", "") or ""),
+                "client_version": str(getattr(backend, "client_version", "") or ""),
+                "account_email": account_email,
+                "index": index,
+                "error": str(exc)[:500],
+            })
+            raise ImageGenerationError(
+                image_stream_error_message(str(exc)),
+                account_email=account_email,
+                conversation_id="",
             ) from exc
         except ImageGenerationError as exc:
             account_service.mark_image_result(token, False)

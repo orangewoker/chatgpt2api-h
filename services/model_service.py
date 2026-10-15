@@ -24,6 +24,10 @@ INCOMPATIBLE_MODEL_SUFFIXES = ("-wm",)
 # Local routing aliases for the shared ChatGPT Web slug. These are not new
 # upstream slugs: send the advertised slug after selecting the matching plan.
 GPT6_VARIANT_MODELS = frozenset({"gpt-6-sol", "gpt-6-luna"})
+# Known successor slugs used only when the configured image upstream disappears
+# from the live ChatGPT catalog (for example gpt-5-5 -> gpt-5-6 -> gpt-6).
+IMAGE_UPSTREAM_FALLBACK_MODELS = ("gpt-5-6", "gpt-6")
+
 GPT6_VARIANT_BY_PLAN = {
     "free": "luna",
     "go": "luna",
@@ -261,6 +265,37 @@ class ModelCatalogService:
                 account_types=account_types,
                 allow_anonymous=model in self._anonymous_models,
             )
+
+    def image_upstream_model(self, model: str) -> str:
+        """Resolve a configured web-image upstream slug to an active catalog slug.
+
+        Image endpoints historically sent the user-configured upstream model.
+        After a web rollout retires that slug, prepare can still succeed while
+        the conversation endpoint fails with a bare 404.  Prefer the configured
+        value when it is still advertised; otherwise walk known successor
+        slugs that exist in the current catalog.
+        """
+        configured = str(model or "").strip()
+        if not configured:
+            return configured
+        self._ensure_catalog()
+        with self._lock:
+            if configured in self._anonymous_models or any(
+                configured in models for models in self._models_by_account_type.values()
+            ):
+                return configured
+            for candidate in IMAGE_UPSTREAM_FALLBACK_MODELS:
+                if candidate != configured and (
+                    candidate in self._anonymous_models
+                    or any(candidate in models for models in self._models_by_account_type.values())
+                ):
+                    logger.warning({
+                        "event": "image_upstream_model_fallback",
+                        "configured_model": configured,
+                        "upstream_model": candidate,
+                    })
+                    return candidate
+        return configured
 
     def upstream_model_for_account(self, model: str, access_token: str) -> str:
         """Resolve a public variant on the selected account, without downgrade.
