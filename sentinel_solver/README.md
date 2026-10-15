@@ -44,6 +44,11 @@ CHATGPT2API_SENTINEL_SOLVER_KEY=<与 SENTINEL_SOLVER_KEY 相同>
 或安装 `requirements.txt`、执行 `playwright install --with-deps --no-shell chromium` 后运行 `python app.py`。
 主服务无需安装 Playwright；求解服务是可选的，但遇到必需的 Turnstile 挑战时，必须配置它。
 
+Docker 镜像不包含 Chromium；容器启动时由入口脚本下载完整 Chromium 并安装系统依赖，
+成功后才启动 HTTP 服务。首次启动需要联网并以 root 安装依赖，可设置 `HTTPS_PROXY` / `HTTP_PROXY`
+作为下载代理；`SENTINEL_SOLVER_PROXY` 仅控制浏览器访问 chatgpt.com 的代理。
+建议将 `/ms-playwright` 挂载为持久卷，以复用已下载的浏览器；重建容器后仍需安装系统依赖。
+
 未配置或调用失败时，主服务**直接失败**并报出明确错误，不再退回本地求解器：本地求解器跟不上新版
 挑战程序，继续用空 token 只会换来伪装成 404 的 "Model not found"，白等一轮重试预算。
 
