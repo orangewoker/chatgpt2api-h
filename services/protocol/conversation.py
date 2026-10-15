@@ -1488,7 +1488,7 @@ def _generate_single_gemini_image(
                 request.progress_callback("generating_image")
             provider = GeminiWebImageProvider(token, account=account)
             result = provider.generate(
-                prompt=prompt_with_global_system(request.prompt),
+                prompt=request.prompt,
                 size=request.size or "1024x1024",
                 ratio=request.ratio,
                 images=request.images or None,

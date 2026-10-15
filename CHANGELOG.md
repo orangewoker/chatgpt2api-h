@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.0 - 2026-10-15
+
++ [新增] 增加 Agnes `agnes-image-2.1-flash` 图片渠道，支持 API Key、比例、分辨率和参考图。
++ [新增] 增加 Gemini Web / Imagen 图片渠道，支持 Cookie 导入、比例、分辨率、参考图和高清原图下载。
++ [新增] 图片模型目录按账号来源动态返回 ChatGPT、Agnes 和 Gemini 渠道，前端按渠道显示独立的图片设置和结果分组。
+
 ## 1.8.7 - 2026-10-15
 
 + [修复] 生图准备请求和正式会话共用 `client-created-root` 父消息 ID，适配 ChatGPT 最新图片会话接口，避免 `/backend-api/f/conversation` 返回空响应 404。

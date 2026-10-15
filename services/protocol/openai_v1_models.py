@@ -26,7 +26,8 @@ def list_models() -> dict[str, Any]:
         for account in accounts
         if isinstance(account, dict)
            and account_service.account_provider(account) == "chatgpt"
-           and account_service._is_image_account_available(account)
+           and account.get("status") not in {"禁用", "异常"}
+           and account_service._normalize_source_type(account.get("source_type")) != "codex"
     ]
     agnes_image_accounts = [
         account
@@ -47,7 +48,7 @@ def list_models() -> dict[str, Any]:
         for account in accounts
         if isinstance(account, dict)
            and account_service.account_provider(account) == "chatgpt"
-           and account_service._is_image_account_available(account)
+           and account.get("status") not in {"禁用", "异常"}
            and account_service._normalize_source_type(account.get("source_type")) == "codex"
            and (normalized := account_service._normalize_account_type(account.get("type")))
     }

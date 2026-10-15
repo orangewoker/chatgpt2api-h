@@ -141,7 +141,7 @@ environment:
 - 兼容面向图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
 - `GET /v1/models` 返回 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
-  `gpt-5-mini`
+  `gpt-5-mini`；配置 Agnes 或 Gemini 账号后还会动态返回 `agnes-image-2.1-flash`、`gemini-image-2.5-flash` 和 Imagen 模型
 - 支持通过 `n` 返回多张生成结果
 - `size` 支持 `3840x2160` / `2160x3840` 等 4K 尺寸；当上游返回较小图片时，服务端会使用 Lanczos 高质量插值自动放大到目标尺寸
 - 支持生成可编辑 PPT 文件
@@ -153,6 +153,7 @@ environment:
 
 - 内置在线画图工作台，支持生成、图片编辑与多图组图编辑
 - 支持 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` 模型选择
+- 支持 Agnes `agnes-image-2.1-flash` 和 Gemini Web `gemini-image-2.5-flash` / Imagen 模型；前端会根据渠道显示对应的尺寸、比例和结果分组
 - 编辑模式支持参考图上传
 - 前端支持多图生成交互
 - 本地保存图片会话历史，支持回看、删除和清空
@@ -172,6 +173,7 @@ environment:
 - 支持搜索、筛选、批量刷新、导出、手动编辑和清理账号
 - 支持四种导入方式：本地 CPA JSON 文件导入、远程 CPA 服务器导入、`sub2api` 服务器导入、`access_token` 导入
 - 支持在设置页配置 `sub2api` 服务器，筛选并批量导入其中的 OpenAI OAuth 账号
+- 支持导入 Agnes API Key，以及从 Cookie-Editor 或浏览器 Cookie 导入 Gemini Web 会话
 
 ### 实验性 / 规划中
 
@@ -222,7 +224,7 @@ curl http://localhost:8000/v1/models \
 
 | 字段   | 说明                                                                                                         |
 |:-----|:-----------------------------------------------------------------------------------------------------------|
-| 返回模型 | `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` |
+| 返回模型 | 根据账号池动态返回 ChatGPT、Codex、Agnes 和 Gemini 图片模型，以及文本模型 |
 | 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                          |
 
 <br>

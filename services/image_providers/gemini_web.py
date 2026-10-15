@@ -147,6 +147,45 @@ def _extract_google_image_urls(text: str) -> list[str]:
     return urls
 
 
+def _extract_gemini_response_text(resp_text: str) -> str:
+    """Extract assistant text response or rejection explanation from Gemini RPC payload."""
+    try:
+        start_idx = resp_text.find('[')
+        if start_idx != -1:
+            raw = resp_text[start_idx:]
+            chunks = json.loads(raw)
+            texts: list[str] = []
+            for c in chunks:
+                if isinstance(c, list) and len(c) > 2 and c[0] == "wrb.fr" and isinstance(c[2], str):
+                    try:
+                        inner = json.loads(c[2])
+                        if isinstance(inner, list) and len(inner) > 4 and isinstance(inner[4], list):
+                            for cand in inner[4]:
+                                if isinstance(cand, list) and len(cand) > 1 and isinstance(cand[1], list):
+                                    for item in cand[1]:
+                                        if isinstance(item, str):
+                                            clean = re.sub(r'https?://\S+', '', item).strip()
+                                            if clean:
+                                                texts.append(clean)
+                    except Exception:
+                        pass
+            if texts:
+                return texts[-1]
+    except Exception:
+        pass
+
+    matches = re.findall(r'\[\"rc_[^\"]+\",\[\"(.*?)\"\]', resp_text)
+    for m in reversed(matches):
+        try:
+            clean = m.encode().decode('unicode_escape', errors='ignore')
+            clean = re.sub(r'https?://\S+', '', clean).strip()
+            if clean:
+                return clean
+        except Exception:
+            pass
+    return ""
+
+
 class GeminiWebImageProvider:
     """Dispatches text-to-image requests to Gemini Web / Bard frontend."""
 
@@ -175,6 +214,7 @@ class GeminiWebImageProvider:
         if self._session is None:
             kwargs = proxy_settings.build_session_kwargs(
                 account=self.account,
+                upstream=True,
                 impersonate="chrome124",
                 verify=True,
             )
@@ -312,13 +352,20 @@ class GeminiWebImageProvider:
 
         # Build prompt with ratio & generation intent
         aspect_ratio = _determine_aspect_ratio(size, ratio)
-        ratio_hint = f" (aspect ratio {aspect_ratio})" if aspect_ratio else ""
-        full_prompt = f"Please generate a high-resolution 4K quality image: {cleaned_prompt}{ratio_hint}"
+        is_zh = any('\u4e00' <= c <= '\u9fff' for c in cleaned_prompt)
+        if is_zh:
+            ratio_hint = f"（宽高比 {aspect_ratio}）" if aspect_ratio else ""
+            full_prompt = f"请生成一张高质量4K画质图片：{cleaned_prompt}{ratio_hint}"
+            lang = ["zh-CN"]
+        else:
+            ratio_hint = f" (aspect ratio {aspect_ratio})" if aspect_ratio else ""
+            full_prompt = f"Please generate a high-resolution 4K quality image: {cleaned_prompt}{ratio_hint}"
+            lang = ["en"]
 
         # Construct Google Batchexecute RPC payload
         req_payload = [
             [full_prompt, 0, None, None, None, None, 0],
-            ["zh-CN" if any('\u4e00' <= c <= '\u9fff' for c in cleaned_prompt) else "en"],
+            lang,
             [None, None, None],
             None, None, None, [1], 0, [], None, None, None, None, None,
         ]
@@ -365,12 +412,6 @@ class GeminiWebImageProvider:
             )
 
         resp_text = resp.text
-        if "quota" in resp_text.lower() and "exceeded" in resp_text.lower():
-            raise GeminiWebImageError(
-                "Gemini Web quota exceeded",
-                status_code=429,
-                code="insufficient_quota",
-            )
 
         # Extract image URLs from RPC payload
         image_urls = _extract_google_image_urls(resp_text)
@@ -382,7 +423,36 @@ class GeminiWebImageProvider:
                     image_urls.append(m)
 
         if not image_urls:
-            logger.warning(f"Gemini Web response text snippet (no image found): {resp_text[:300]}")
+            explanation = _extract_gemini_response_text(resp_text)
+            logger.warning(f"Gemini Web response (no image found): {explanation or resp_text[:300]}")
+            explanation_lower = explanation.lower()
+            combined_lower = f"{explanation_lower} {resp_text[:1000].lower()}"
+
+            if any(k in combined_lower for k in [
+                "quota", "exceeded", "limit for today", "reached your limit",
+                "image generation limit", "try again tomorrow", "已达上限", "达到上限", "生成限制", "次数用尽"
+            ]):
+                raise GeminiWebImageError(
+                    f"Gemini Web 今日生图配额已达上限: {explanation or 'Daily quota reached'}",
+                    status_code=429,
+                    code="insufficient_quota",
+                    retryable=False,
+                )
+            if any(k in explanation_lower for k in [
+                "can't generate", "cannot generate", "unable to generate",
+                "safety", "policy", "无法生成", "不能生成", "抱歉，我无法"
+            ]):
+                raise GeminiWebImageError(
+                    f"Gemini 拒绝生成该图片: {explanation}",
+                    status_code=400,
+                    code="invalid_prompt",
+                )
+            if explanation:
+                raise GeminiWebImageError(
+                    f"Gemini 未生成图片，返回了文本回复: {explanation}",
+                    status_code=502,
+                    code="no_image_generated",
+                )
             raise GeminiWebImageError(
                 "Gemini Web did not return any generated image",
                 status_code=502,
