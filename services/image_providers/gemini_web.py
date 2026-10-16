@@ -662,13 +662,21 @@ class GeminiWebImageProvider:
         full_size_context = _extract_gemini_full_size_context(resp_text)
         if full_size_context:
             source_url, token, metadata_json = full_size_context
-            full_size_url = self._fetch_full_size_url(token, cleaned_prompt, metadata_json)
+            # The web c8o8Fe request repeats the exact prompt sent to
+            # StreamGenerate, including the high-resolution/ratio hint.  Using
+            # only the raw user text can make Google return the preview
+            # rendition instead of the full-size master.
+            full_size_url = self._fetch_full_size_url(token, full_prompt, metadata_json)
             if full_size_url:
-                # c8o8Fe already returns the exact URL used by the web UI's
-                # "Download full size" action (usually ending in
-                # ``=s0-d-I?alr=yes``).  Do not normalize it to bare ``=s0``:
-                # that drops the download rendition flags and can yield the
-                # 1K preview instead of the 2K master.
+                # c8o8Fe returns the unsigned ``/gg/...`` base URL.  The web
+                # client turns it into the full-size rendition by adding this
+                # exact Google image transform before following the redirect
+                # to ``/rd-gg/...=s0-d-I?alr=yes``.  Bare ``=s0`` is only a
+                # preview in this flow.
+                if "=" not in full_size_url.rsplit("/", 1)[-1]:
+                    full_size_url += "=s0-d-I?alr=yes"
+                elif full_size_url.endswith("=s0"):
+                    full_size_url += "-d-I?alr=yes"
                 download_candidates.append(full_size_url)
             if source_url not in image_urls:
                 image_urls.insert(0, source_url)
