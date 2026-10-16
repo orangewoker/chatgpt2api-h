@@ -147,7 +147,7 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
 function filterImageModels(items: Model[]): ImageModel[] {
   return items
     .map((item) => String(item.id || "").trim())
-    .filter((id, index, list) => id.toLowerCase().includes("image") && list.indexOf(id) === index);
+    .filter((id, index, list) => (id.toLowerCase().includes("image") || id.startsWith("imagen-")) && list.indexOf(id) === index);
 }
 
 function normalizeStoredImageModel(value: string | null, availableModels: ImageModel[]): ImageModel {
@@ -155,7 +155,7 @@ function normalizeStoredImageModel(value: string | null, availableModels: ImageM
   if (normalized && availableModels.includes(normalized)) {
     return normalized;
   }
-  return availableModels[0] || "gpt-image-2";
+  return availableModels.includes("gpt-image-2") ? "gpt-image-2" : availableModels.includes("gemini-image") ? "gemini-image" : availableModels[0] || "gpt-image-2";
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -1552,6 +1552,10 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     }
 
     const effectiveImageMode: ImageConversationMode = referenceImageFiles.length > 0 ? "edit" : "generate";
+    if (effectiveImageMode === "edit" && (imageModel.startsWith("gemini-") || imageModel.startsWith("imagen-"))) {
+      toast.error("Gemini 网页生图当前仅支持文生图，请移除参考图或切换模型");
+      return;
+    }
 
     const targetConversation = selectedConversationId
       ? conversationsRef.current.find((conversation) => conversation.id === selectedConversationId) ?? null
@@ -1729,7 +1733,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             imageQuality={imageQuality}
             imageModel={imageModel}
             imageModels={imageModels}
-            availableQuota={availableQuota}
+            availableQuota={imageModel.startsWith("gemini-") || imageModel.startsWith("imagen-") ? "由 Gemini 网页决定" : availableQuota}
             activeTaskCount={activeTaskCount}
             referenceImages={referenceImages}
             textareaRef={textareaRef}

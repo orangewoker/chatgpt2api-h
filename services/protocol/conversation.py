@@ -1317,7 +1317,12 @@ def _generate_single_gemini_image(
         index: int,
         total: int,
 ) -> list[ImageOutput]:
-    token = account_service.get_available_access_token(provider="gemini")
+    if request.images:
+        raise ImageGenerationError("Gemini Web currently supports text-to-image only.", status_code=400, code="unsupported_operation")
+    try:
+        token = account_service.get_available_access_token(provider="gemini")
+    except RuntimeError as exc:
+        raise ImageGenerationError("No available Gemini Web account.", status_code=429, code="insufficient_quota") from exc
     provider = None
     try:
         account = account_service.get_account(token) or {}
@@ -1338,7 +1343,19 @@ def _generate_single_gemini_image(
         return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)]
     except GeminiWebImageError as exc:
         account_service.mark_image_result(token, False, release_slot=False)
+        if exc.code == "token_invalid":
+            account_service.update_account(token, {"status": "异常"}, quiet=True)
+        elif exc.status_code == 429:
+            from datetime import datetime, timedelta, timezone
+            delay = exc.retry_after_seconds or (86400 if exc.code == "insufficient_quota" else 60)
+            account_service.update_account(token, {
+                "status": "限流",
+                "restore_at": (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
+            }, quiet=True)
         raise ImageGenerationError(str(exc), status_code=exc.status_code, code=exc.code) from exc
+    except Exception as exc:
+        account_service.mark_image_result(token, False, release_slot=False)
+        raise ImageGenerationError("Gemini Web image generation failed.", status_code=502, code="upstream_error") from exc
     finally:
         if provider is not None:
             provider.close()
@@ -1356,10 +1373,7 @@ def _generate_single_image(
     实现并行生图，避免串行超时阻塞。
     """
     if is_gemini_image_model(request.model):
-        try:
-            return _generate_single_gemini_image(request, index, total)
-        except RuntimeError as exc:
-            raise ImageGenerationError("No available Gemini Web account.", status_code=429, code="insufficient_quota") from exc
+        return _generate_single_gemini_image(request, index, total)
 
     # 模型返回文本而非图片的最大重试次数
     MAX_TEXT_REPLY_RETRIES = 3
@@ -1671,6 +1685,8 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                 })
 
     if not emitted:
+        if is_gemini_image_model(request.model) and errors:
+            raise next(iter(errors.values()))
         if not last_error:
             last_error = "no account in the pool could generate images — check account quota and rate-limit status"
         raise ImageGenerationError(image_stream_error_message(last_error), conversation_id="")

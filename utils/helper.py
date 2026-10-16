@@ -26,8 +26,9 @@ WEB_IMAGE_MODELS = {
 WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
     r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
 )
-GEMINI_IMAGE_MODEL = "gemini-image-2.5-flash"
-GEMINI_IMAGE_MODELS = {GEMINI_IMAGE_MODEL, "imagen-3", "imagen-3.0-generate-002", "gemini-2.0-flash-image", "gemini-image"}
+GEMINI_IMAGE_MODEL = "gemini-image"
+# Compatibility aliases route to the default Gemini Web session model.
+GEMINI_IMAGE_MODELS = {GEMINI_IMAGE_MODEL, "imagen-3", "imagen-3.0-generate-002", "gemini-2.0-flash-image", "gemini-image-2.5-flash"}
 BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2"} | GEMINI_IMAGE_MODELS
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
@@ -142,8 +143,7 @@ def is_supported_image_model(model: object) -> bool:
 
 def is_gemini_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
-    name = str(model or "").strip().lower()
-    return base_model in GEMINI_IMAGE_MODELS or "gemini-image" in name or "imagen-3" in name
+    return base_model in GEMINI_IMAGE_MODELS
 
 
 def is_web_image_model(model: object) -> bool:

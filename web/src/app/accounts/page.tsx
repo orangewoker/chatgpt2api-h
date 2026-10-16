@@ -101,6 +101,7 @@ function formatCompact(value: number) {
 }
 
 function formatQuota(account: Account) {
+  if (account.provider === "gemini") return "网页额度";
   return String(Math.max(0, account.quota));
 }
 

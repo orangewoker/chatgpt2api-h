@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from PIL import Image
 
@@ -67,9 +67,9 @@ def test_parse_cookie_input_json():
 def test_extract_google_image_urls():
     payload = r'some data ["https://lh3.googleusercontent.com/ggms/AF1QipNabc12345=s1024", "https://googleusercontent.com/image_test_456"]'
     urls = _extract_google_image_urls(payload)
-    assert len(urls) == 2
+    assert len(urls) == 1
     assert "https://lh3.googleusercontent.com/ggms/AF1QipNabc12345=s1024" in urls
-    assert "https://googleusercontent.com/image_test_456" in urls
+    assert "https://googleusercontent.com/image_test_456" not in urls
 
 
 def test_remove_gemini_sparkle_watermark():
@@ -107,3 +107,143 @@ def test_generate_single_gemini_image_success():
         assert len(outputs[0].data) == 1
         mock_mark.assert_called_once_with(fake_token, True, release_slot=False)
         mock_release.assert_called_once_with(fake_token)
+
+
+@pytest.fixture
+def isolated_accounts(tmp_path, monkeypatch):
+    import api.accounts as accounts_api
+    import services.protocol.conversation as conversation
+    from services.account_service import AccountService
+    from services.storage.json_storage import JSONStorageBackend
+
+    service = AccountService(JSONStorageBackend(tmp_path / "accounts.json"))
+    monkeypatch.setattr(accounts_api, "account_service", service)
+    monkeypatch.setattr(conversation, "account_service", service)
+    return service
+
+
+def test_google_accounts_are_isolated_from_openai(isolated_accounts):
+    service = isolated_accounts
+    token = "__Secure-1PSID=fixture; __Secure-1PSIDTS=old"
+    service.add_accounts([token, "chatgpt-fixture"])
+    service.update_account("chatgpt-fixture", {"quota": 3})
+    with patch("services.openai_backend_api.OpenAIBackendAPI") as backend:
+        assert service.refresh_accounts([token])["errors"] == []
+        assert service.refresh_access_token(token, force=True) == token
+        backend.assert_not_called()
+    assert service._list_ready_candidate_tokens() == ["chatgpt-fixture"]
+    assert service._list_ready_candidate_tokens(provider="gemini") == [token]
+    assert service.get_text_access_token() == "chatgpt-fixture"
+
+
+def test_cookie_rotation_preserves_aliases_status_and_slots(isolated_accounts):
+    service = isolated_accounts
+    old = "__Secure-1PSID=fixture; __Secure-1PSIDTS=old"
+    service.add_accounts([old])
+    assert service.get_available_access_token(provider="gemini") == old
+    service.update_account(old, {"status": "异常"})
+    new = service.rotate_gemini_cookies(old, {"__Secure-1PSIDTS": "rotated"})
+    assert new != old
+    assert service.get_account(old)["status"] == "异常"
+    assert service.get_account(new)["access_token"] == new
+    assert service._image_inflight[new] == 1
+    service.release_image_slot(old)
+    assert not service._image_inflight
+    reloaded = type(service)(service.storage)
+    assert reloaded.get_account(new)["access_token"] == new
+
+
+def test_gemini_only_catalog_does_not_advertise_chatgpt(isolated_accounts):
+    from services.model_service import ModelCatalogService
+    from services.protocol import openai_v1_models
+
+    service = isolated_accounts
+    service.add_accounts(["__Secure-1PSID=fixture"])
+    assert ModelCatalogService(service)._active_accounts_by_type() == {}
+    with patch.object(openai_v1_models, "account_service", service), patch.object(
+        openai_v1_models.model_catalog_service, "list_models", return_value={"data": []}
+    ):
+        ids = {item["id"] for item in openai_v1_models.list_models()["data"]}
+    assert "gemini-image" in ids
+    assert "gpt-image-2" not in ids
+    assert not is_gemini_image_model("fake-gemini-image-unknown")
+
+
+@pytest.mark.parametrize("code,status", [("rate_limit", 429), ("token_invalid", 401), ("invalid_prompt", 400)])
+def test_gemini_errors_keep_status_and_release_slots(isolated_accounts, code, status):
+    from services.config import config
+    service = isolated_accounts
+    token = "__Secure-1PSID=fixture"
+    service.add_accounts([token])
+    with patch.object(type(config), "auto_remove_rate_limited_accounts", new_callable=PropertyMock, return_value=True), patch.object(
+        GeminiWebImageProvider, "generate", side_effect=GeminiWebImageError("fixture error", status_code=status, code=code)
+    ):
+        with pytest.raises(ImageGenerationError) as error:
+            _generate_single_image(ConversationRequest(model="gemini-image", prompt="test"), 1, 1)
+    assert error.value.status_code == status
+    assert not service._image_inflight
+    account = service.get_account(token)
+    assert account is not None
+    assert account["fail"] == 1
+    if status == 429:
+        assert account["status"] == "限流"
+        assert not service._list_ready_candidate_tokens(provider="gemini")
+        service.update_account(token, {"restore_at": "2000-01-01T00:00:00+00:00"})
+        assert service._list_ready_candidate_tokens(provider="gemini") == [token]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_gemini_import_and_generation_api(isolated_accounts, monkeypatch, stream):
+    import api.accounts as accounts_api
+    import api.ai as ai_api
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from services.log_service import LoggedCall
+
+    monkeypatch.setattr(accounts_api, "require_admin", lambda _: None)
+    monkeypatch.setattr(ai_api, "require_identity", lambda _: {})
+    monkeypatch.setattr(ai_api, "check_request", lambda _: None)
+    monkeypatch.setattr(LoggedCall, "log", lambda *args, **kwargs: None)
+    app = FastAPI()
+    app.include_router(accounts_api.create_router())
+    app.include_router(ai_api.create_router())
+    client = TestClient(app)
+    token = "__Secure-1PSID=fixture; __Secure-1PSIDTS=fixture"
+    with patch("services.openai_backend_api.OpenAIBackendAPI") as backend:
+        response = client.post("/api/accounts", json={"accounts": [{"access_token": token, "provider": "gemini"}]})
+        assert response.status_code == 200
+        assert response.json()["errors"] == []
+        backend.assert_not_called()
+    image = io.BytesIO()
+    Image.new("RGB", (64, 64), "red").save(image, "PNG")
+    encoded = base64.b64encode(image.getvalue()).decode()
+    with patch.object(GeminiWebImageProvider, "generate", return_value={"data": [{"b64_json": encoded}]}) as generate:
+        response = client.post("/v1/images/generations", json={"model": "gemini-image", "prompt": "red square", "stream": stream})
+        assert response.status_code == 200, response.text
+        assert encoded in response.text
+        generate.assert_called_once()
+    assert isolated_accounts.get_account(token)["success"] == 1
+    assert not isolated_accounts._image_inflight
+    response = client.post("/v1/images/edits", json={"model": "gemini-image", "prompt": "edit", "images": [{"image_url": f"data:image/png;base64,{encoded}"}]})
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "unsupported_operation"
+
+
+def test_provider_download_validates_image_and_uses_master_url():
+    provider = GeminiWebImageProvider("__Secure-1PSID=fixture")
+    provider.snlm0e = "fixture-at"
+    session = MagicMock()
+    provider._session = session
+    session.post.return_value.status_code = 200
+    session.post.return_value.text = 'https://lh3.googleusercontent.com/gg-dl/fixture=s512'
+    raw = io.BytesIO()
+    Image.new("RGB", (1024, 1024), "red").save(raw, "PNG")
+    session.get.return_value.status_code = 200
+    session.get.return_value.iter_content.return_value = [raw.getvalue()]
+    result = provider.generate("red square")
+    assert result["data"][0]["b64_json"]
+    assert session.get.call_args.args[0].endswith("=s0")
+    session.get.return_value.close.assert_called_once()
+    session.get.return_value.iter_content.return_value = [b"<html>not an image</html>"]
+    with pytest.raises(GeminiWebImageError, match="valid generated image"):
+        provider.generate("red square")

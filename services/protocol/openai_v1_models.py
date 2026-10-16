@@ -28,6 +28,7 @@ def list_models() -> dict[str, Any]:
         # the ChatGPT Web image path; treating "password" as a separate product
         # source accidentally hid all Web image models in v1.8.2.
         if account_service._normalize_source_type(account.get("source_type")) != "codex"
+        and account_service.account_provider(account) == "chatgpt"
     ]
     codex_types = {
         normalized

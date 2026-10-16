@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.9.3 - 2026-10-16
+
++ [调整] ChatGPT 生图逻辑恢复到 v1.8.4 基线，移除 v1.8.5–v1.9.2 引入的 Sentinel/Chromium 修复路径；发布版本继续递增。
++ [新增] 参考 leiseek/chatgpt2api 接入 Gemini Web 文生图，兼容 `/v1/images/generations`、Base64/URL 返回及 SSE 流式输出。
++ [新增] 账号页提供 Gemini Cookie 导入入口，支持完整 Cookie 和多行 Cookie-Editor JSON；生图页展示 Gemini 模型。
++ [修复] Gemini 与 ChatGPT 账号池隔离，避免 Google Cookie 被用于 OpenAI 信息查询、Token 刷新或文本请求。
++ [修复] 保存 Gemini Cookie 轮换并保留账号状态和并发槽位；限流冷却、过期状态和错误码正常传递。
++ [优化] 优先下载 Google `=s0` 原图，验证下载内容及大小，支持按尺寸提示比例和本地 Lanczos 缩放。
++ [说明] 推荐 `gemini-image`；Gemini/Imagen 历史名称仅为兼容别名，实际使用网页会话默认模型。当前仅支持文生图，2K/4K 不代表原生分辨率。
++ [验证] 已完成 Gemini 实际文生图；新增隔离测试覆盖导入、普通/流式 API、账号路由、Cookie 持久化和失败释放。
+
 ## 1.8.4 - 2026-10-09
 
 + [新增] 混合 Plus/Free 账号池可分别选择 `gpt-6-sol` 与 `gpt-6-luna`，保留 `gpt-6` 自动分配以兼容已有客户端。

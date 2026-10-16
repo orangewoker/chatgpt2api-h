@@ -129,9 +129,17 @@ class AccountService:
         self.storage.save_accounts(list(self._accounts.values()))
 
     @staticmethod
+    def account_provider(account: dict) -> str:
+        return "gemini" if str(account.get("provider") or "").lower() == "gemini" else "chatgpt"
+
+    @staticmethod
     def _is_image_account_available(account: dict) -> bool:
         if not isinstance(account, dict):
             return False
+        if account.get("status") == "限流" and account.get("provider") == "gemini":
+            restore_at = AccountService._parse_time(account.get("restore_at"))
+            if restore_at and restore_at <= datetime.now(timezone.utc):
+                return True
         if account.get("status") in {"禁用", "限流", "异常"}:
             return False
         if str(account.get("quota_mode") or "").lower() == "external":
@@ -453,6 +461,8 @@ class AccountService:
             if not account:
                 return access_token
             active_token = str(account.get("access_token") or resolved_token or access_token)
+            if self.account_provider(account) == "gemini":
+                return active_token
             if not self._token_needs_refresh(active_token, force=force):
                 return active_token
             refresh_token = str(account.get("refresh_token") or "").strip()
@@ -913,7 +923,7 @@ class AccountService:
                and self._account_matches_plan_type(item, plan_type)
                and self._account_matches_any_plan_type(item, plan_types)
                and self._account_matches_source_type(item, source_type)
-               and (not provider or str(item.get("provider") or "chatgpt").lower() == provider.lower())
+               and self.account_provider(item) == (provider or "chatgpt").lower()
                and (token := item.get("access_token") or "")
                and token not in excluded
         ]
@@ -1009,7 +1019,7 @@ class AccountService:
                     and self._account_matches_plan_type(account or {}, plan_type)
                     and self._account_matches_any_plan_type(account or {}, plan_types)
                     and self._account_matches_source_type(account or {}, source_type)
-                    and (not provider or str((account or {}).get("provider") or "chatgpt").lower() == provider.lower())
+                    and self.account_provider(account or {}) == (provider or "chatgpt").lower()
             ):
                 return str((account or {}).get("access_token") or access_token)
             self.release_image_slot(access_token)
@@ -1035,6 +1045,7 @@ class AccountService:
                 token
                 for account in self._accounts.values()
                 if account.get("status") not in {"禁用", "异常"}
+                   and self.account_provider(account) == "chatgpt"
                    and (
                        route is None
                        or self._normalize_account_type(account.get("type")) in route.account_types
@@ -1234,6 +1245,32 @@ class AccountService:
             items = [dict(item) for item in self._accounts.values()]
         return {"removed": removed, "items": items}
 
+    def rotate_gemini_cookies(self, access_token: str, cookies: dict[str, str]) -> str:
+        """Merge Google cookie rotation without losing concurrent updates or slots."""
+        from services.image_providers.gemini_web import _parse_cookie_input
+
+        with self._image_slot_condition:
+            old_token = self._resolve_access_token_locked(access_token)
+            current = self._accounts.get(old_token)
+            if not current or self.account_provider(current) != "gemini":
+                return access_token
+            merged, _ = _parse_cookie_input(old_token)
+            merged.update(cookies)
+            new_token = "; ".join(f"{k}={v}" for k, v in merged.items())
+            if new_token == old_token:
+                return old_token
+            account = {**current, "access_token": new_token}
+            account.pop("snlm0e", None)
+            self._accounts.pop(old_token)
+            self._accounts[new_token] = account
+            self._token_aliases[old_token] = new_token
+            inflight = self._image_inflight.pop(old_token, 0)
+            if inflight:
+                self._image_inflight[new_token] = self._image_inflight.get(new_token, 0) + inflight
+            self._save_accounts()
+            self._image_slot_condition.notify_all()
+            return new_token
+
     def update_account(self, access_token: str, updates: dict, quiet: bool = False) -> dict | None:
         if not access_token:
             return None
@@ -1245,7 +1282,7 @@ class AccountService:
             account = self._normalize_account({**current, **updates, "access_token": access_token})
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts and self.account_provider(account) == "chatgpt":
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
@@ -1347,7 +1384,7 @@ class AccountService:
             account = self._normalize_account(next_item)
             if account is None:
                 return None
-            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts:
+            if account.get("status") == "限流" and config.auto_remove_rate_limited_accounts and self.account_provider(account) == "chatgpt":
                 self._accounts.pop(access_token, None)
                 self._save_accounts()
                 log_service.add(LOG_TYPE_ACCOUNT, "自动移除限流账号", {"token": anonymize_token(access_token)})
@@ -1366,6 +1403,10 @@ class AccountService:
         if not access_token:
             raise ValueError("access_token is required")
 
+        account = self.get_account(access_token)
+        if account and self.account_provider(account) == "gemini":
+            # Google sessions have no OpenAI profile, JWT refresh or quota endpoint.
+            return account
         active_token = self.refresh_access_token(access_token, event=f"{event}:preflight") or access_token
         try:
             from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
@@ -1564,7 +1605,7 @@ class AccountService:
         if config.auto_relogin_after_refresh:
             for token in access_tokens:
                 account = self.get_account(token)
-                if not account:
+                if not account or self.account_provider(account) == "gemini":
                     continue
                 status = str(account.get("status") or "").strip()
                 if status != "异常":
@@ -1623,7 +1664,7 @@ class AccountService:
 
             email = str(account.get("email") or "").strip()
             password = str(account.get("password") or "").strip()
-            if not email or not password:
+            if self.account_provider(account) == "gemini" or not email or not password:
                 skipped += 1
                 if progress_id:
                     self.update_relogin_progress(progress_id, token, "跳过", "无邮箱密码")

@@ -8,14 +8,13 @@ import re
 import time
 from io import BytesIO
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 from curl_cffi import requests
 from PIL import Image
 
 from services.proxy_service import proxy_settings
 from utils.gemini_watermark import remove_gemini_sparkle
-from utils.helper import GEMINI_IMAGE_MODEL
 from utils.log import logger
 
 GEMINI_WEB_BASE = "https://gemini.google.com"
@@ -142,6 +141,11 @@ def _extract_google_image_urls(text: str) -> list[str]:
         # Skip small icons/avatars and internal placeholders
         if "=s32" in cleaned or "=s64" in cleaned or "profile" in cleaned or "avatar" in cleaned or "image_generation_content" in cleaned:
             continue
+        parsed = urlparse(cleaned)
+        if parsed.scheme != "https" or not re.fullmatch(r"lh\d+\.googleusercontent\.com", parsed.hostname or ""):
+            continue
+        if not parsed.path.startswith(("/gg-dl/", "/ggms/")):
+            continue
         if cleaned not in urls:
             urls.append(cleaned)
     return urls
@@ -198,11 +202,12 @@ class GeminiWebImageProvider:
     ) -> None:
         self.account = dict(account or {})
         self.token = str(token or "").strip()
-        self.cookies, self.snlm0e = _parse_cookie_input(self.token, self.account)
+        self.cookies, _ = _parse_cookie_input(self.token, self.account)
+        self.snlm0e = ""  # Fetch a fresh page token for each generation session.
         self.timeout = max(10.0, float(timeout))
         self._session: requests.Session | None = None
 
-        if not self.cookies:
+        if not self.cookies.get("__Secure-1PSID"):
             raise GeminiWebImageError(
                 "Gemini Web cookies are required. Please provide __Secure-1PSID and __Secure-1PSIDTS.",
                 status_code=401,
@@ -242,27 +247,17 @@ class GeminiWebImageProvider:
             current_cookies = dict(self._session.cookies)
             if not current_cookies:
                 return
-            updated_any = False
+            rotated = {}
             for k in ["__Secure-1PSIDTS", "__Secure-1PSIDCC", "SIDCC", "__Secure-3PSIDTS", "__Secure-3PSIDCC"]:
                 if k in current_cookies and current_cookies[k] != self.cookies.get(k):
-                    self.cookies[k] = current_cookies[k]
-                    updated_any = True
-            
-            if updated_any or self.snlm0e:
-                parts = [f"{k}={v}" for k, v in self.cookies.items()]
-                new_token_str = "; ".join(parts)
+                    rotated[k] = current_cookies[k]
+
+            if rotated:
                 from services.account_service import account_service
-                updates: dict[str, Any] = {
-                    "access_token": new_token_str,
-                    "status": "正常",
-                    "last_token_refresh_error": None,
-                }
-                if self.snlm0e:
-                    updates["snlm0e"] = self.snlm0e
-                account_service.update_account(self.token, updates)
-                self.token = new_token_str
-        except Exception as exc:
-            logger.debug(f"Failed to sync Gemini cookies back: {exc}")
+                self.token = account_service.rotate_gemini_cookies(self.token, rotated)
+                self.cookies.update(rotated)
+        except Exception:
+            logger.debug("Failed to persist Gemini cookie rotation")
 
     def close(self) -> None:
         if self._session is not None:
@@ -321,9 +316,9 @@ class GeminiWebImageProvider:
         except GeminiWebImageError:
             raise
         except Exception as exc:
-            logger.warning(f"Failed to fetch Gemini SNlM0e token: {exc}")
+            logger.warning("Failed to fetch Gemini page token")
             raise GeminiWebImageError(
-                f"Failed to connect to Gemini Web: {exc}",
+                "Failed to connect to Gemini Web",
                 status_code=502,
                 code="upstream_error",
             ) from exc
@@ -347,6 +342,12 @@ class GeminiWebImageProvider:
         cleaned_prompt = str(prompt or "").strip()
         if not cleaned_prompt:
             raise GeminiWebImageError("prompt is required", status_code=400, code="invalid_prompt")
+        if images:
+            raise GeminiWebImageError("Gemini Web currently supports text-to-image only.", status_code=400, code="unsupported_operation")
+        if size and size != "auto":
+            match = re.fullmatch(r"(\d+)x(\d+)", size.lower())
+            if not match or not all(1 <= int(v) <= 4096 for v in match.groups()):
+                raise GeminiWebImageError("Gemini image dimensions must be between 1 and 4096.", status_code=400, code="invalid_size")
 
         at_token = self._ensure_snlm0e()
 
@@ -355,11 +356,11 @@ class GeminiWebImageProvider:
         is_zh = any('\u4e00' <= c <= '\u9fff' for c in cleaned_prompt)
         if is_zh:
             ratio_hint = f"（宽高比 {aspect_ratio}）" if aspect_ratio else ""
-            full_prompt = f"请生成一张高质量4K画质图片：{cleaned_prompt}{ratio_hint}"
+            full_prompt = f"请生成一张高质量图片：{cleaned_prompt}{ratio_hint}"
             lang = ["zh-CN"]
         else:
             ratio_hint = f" (aspect ratio {aspect_ratio})" if aspect_ratio else ""
-            full_prompt = f"Please generate a high-resolution 4K quality image: {cleaned_prompt}{ratio_hint}"
+            full_prompt = f"Please generate a high-quality image: {cleaned_prompt}{ratio_hint}"
             lang = ["en"]
 
         # Construct Google Batchexecute RPC payload
@@ -384,7 +385,7 @@ class GeminiWebImageProvider:
             )
         except Exception as exc:
             raise GeminiWebImageError(
-                f"Gemini Web request failed: {exc}",
+                "Gemini Web request failed",
                 status_code=502,
                 code="upstream_error",
                 retryable=True,
@@ -416,15 +417,8 @@ class GeminiWebImageProvider:
         # Extract image URLs from RPC payload
         image_urls = _extract_google_image_urls(resp_text)
         if not image_urls:
-            # Fallback: if Gemini returned markdown image ![...](...)
-            md_matches = re.findall(r'!\[.*?\]\((https?://[^\s\)]+)\)', resp_text)
-            for m in md_matches:
-                if m not in image_urls:
-                    image_urls.append(m)
-
-        if not image_urls:
             explanation = _extract_gemini_response_text(resp_text)
-            logger.warning(f"Gemini Web response (no image found): {explanation or resp_text[:300]}")
+            logger.warning("Gemini Web response contained no generated image")
             explanation_lower = explanation.lower()
             combined_lower = f"{explanation_lower} {resp_text[:1000].lower()}"
 
@@ -472,20 +466,34 @@ class GeminiWebImageProvider:
         last_download_err: Exception | None = None
         for target_url in download_candidates:
             try:
-                img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS)
-                if img_resp.status_code == 200 and len(img_resp.content) > 1024:
-                    raw_bytes = img_resp.content
+                img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS, stream=True, allow_redirects=False)
+                try:
+                    if img_resp.status_code != 200:
+                        continue
+                    chunks = []
+                    downloaded = 0
+                    for chunk in img_resp.iter_content():
+                        downloaded += len(chunk)
+                        if downloaded > MAX_GEMINI_IMAGE_BYTES:
+                            raise ValueError("Generated image exceeds download limit")
+                        chunks.append(chunk)
+                    candidate = b"".join(chunks)
+                    with Image.open(BytesIO(candidate)) as image:
+                        if image.width * image.height > 40_000_000:
+                            raise ValueError("Generated image exceeds pixel limit")
+                        image.verify()
+                    raw_bytes = candidate
                     break
-                else:
-                    logger.warning(f"Image download from {target_url[:60]} returned HTTP {img_resp.status_code}")
+                finally:
+                    img_resp.close()
             except Exception as exc:
                 last_download_err = exc
-                logger.warning(f"Failed to download image from {target_url[:60]}: {exc}")
+                logger.warning("Failed to download a Gemini image candidate")
                 continue
 
         if not raw_bytes:
             raise GeminiWebImageError(
-                f"Failed to download generated image: {last_download_err or 'No valid image found'}",
+                "Failed to download a valid generated image",
                 status_code=502,
                 code="image_download_failed",
             )
@@ -507,7 +515,7 @@ class GeminiWebImageProvider:
             max_dim = max(im.width, im.height)
             if target_w and target_h and (target_w >= 1920 or target_h >= 1920):
                 # 2K / 4K upscale if explicitly requested
-                im = im.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                im = im.convert("RGB").resize((target_w, target_h), Image.Resampling.LANCZOS)
                 buf = BytesIO()
                 im.save(buf, format="JPEG", quality=95)
                 clean_bytes = buf.getvalue()
@@ -516,7 +524,7 @@ class GeminiWebImageProvider:
                 scale = 1024.0 / max_dim
                 new_w = int(round(im.width * scale))
                 new_h = int(round(im.height * scale))
-                im = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                im = im.convert("RGB").resize((new_w, new_h), Image.Resampling.LANCZOS)
                 buf = BytesIO()
                 im.save(buf, format="JPEG", quality=95)
                 clean_bytes = buf.getvalue()

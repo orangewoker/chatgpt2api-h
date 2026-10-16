@@ -135,6 +135,8 @@ class ModelCatalogService:
         for account in self._accounts.list_accounts():
             if not isinstance(account, dict) or account.get("status") in {"禁用", "异常"}:
                 continue
+            if AccountService.account_provider(account) != "chatgpt":
+                continue
             access_token = str(account.get("access_token") or "").strip()
             account_type = self._accounts._normalize_account_type(account.get("type"))
             if access_token and account_type:

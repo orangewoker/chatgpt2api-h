@@ -47,7 +47,7 @@ docker compose up -d
 
 ### Gemini 网页生图
 
-支持通过 Gemini Web 会话 Cookie 使用 `gemini-image-2.5-flash`、`imagen-3` 等模型。将账号以 JSON 导入（`access_token` 填 Cookie 字符串，至少包含 `__Secure-1PSID` 和 `__Secure-1PSIDTS`，并标记 `provider` 为 `gemini`）：
+在账号页面选择「导入 Gemini Cookie」，粘贴 `gemini.google.com` 的完整 Cookie 或 Cookie-Editor 导出的 JSON（每次一个账号）。Cookie 应包含 `__Secure-1PSID` 和 `__Secure-1PSIDTS`。也可通过账号 JSON 导入：
 
 ```json
 {
@@ -57,7 +57,15 @@ docker compose up -d
 }
 ```
 
-导入后模型列表会自动出现 Gemini 图片模型；请求仍使用 OpenAI 兼容的 `/v1/images/generations` 接口。
+导入后可在生图页面选择 `gemini-image`，请求仍使用 OpenAI 兼容的 `/v1/images/generations` 接口，支持 `b64_json`、`url` 和 SSE 流式返回。例如：
+
+```json
+{"model":"gemini-image","prompt":"白色背景上的红色圆形","size":"1024x1024","response_format":"b64_json"}
+```
+
+`gemini-image-2.5-flash`、`gemini-2.0-flash-image`、`imagen-3`、`imagen-3.0-generate-002` 是兼容别名，均调用当前 Gemini 网页会话的默认生图能力，不指定或保证某个上游模型版本。`size` 用于提示宽高比；下载优先取 `=s0` 原图，2K/4K 输出通过本地 Lanczos 缩放，不代表上游原生分辨率。当前仅支持文生图，携带参考图或调用 Gemini 图片编辑会明确报错。
+
+Gemini 账号不参与 ChatGPT 选号、模型目录查询或 OpenAI Token 刷新。网页额度不可查询，账号页显示「网页额度」；上游限流后暂时冷却，Cookie 失效时需重新导入。服务会保存上游返回的 Cookie 更新，但不能保证会话永久有效。
 
 ### 飞牛 OS / 1Panel 一键安装
 

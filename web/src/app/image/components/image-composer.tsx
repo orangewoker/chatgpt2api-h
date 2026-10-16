@@ -120,7 +120,7 @@ export function ImageComposer({
     [referenceImages],
   );
   const modelOptions = useMemo(
-    () => imageModels.map((model) => ({ value: model, label: model })),
+    () => imageModels.map((model) => ({ value: model, label: model !== "gemini-image" && (model.startsWith("gemini-") || model.startsWith("imagen-")) ? `${model}（兼容别名）` : model })),
     [imageModels],
   );
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";

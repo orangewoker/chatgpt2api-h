@@ -38,7 +38,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type ImportMethod = "menu" | "token" | "session" | "codex-auth" | "account-json" | "oauth";
+type ImportMethod = "menu" | "token" | "gemini" | "session" | "codex-auth" | "account-json" | "oauth";
 
 type AccountImportDialogProps = {
   disabled?: boolean;
@@ -80,7 +80,7 @@ function getAccountJsonAccount(value: unknown): AccountImportPayload | null {
   const payload: AccountImportPayload = {
     ...raw,
     access_token: token,
-    source_type: "codex",
+    source_type: String(raw.source_type || (raw.provider === "gemini" ? "web" : "codex")),
   };
   delete payload.accessToken;
   if (payload.type === "codex") {
@@ -444,6 +444,15 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
   };
 
   const renderMethodBody = () => {
+    if (method === "gemini") {
+      return (
+        <div className="space-y-4">
+          <Button variant="ghost" onClick={() => setMethod("menu")}><ArrowLeft className="size-4" />返回导入方式</Button>
+          <p className="text-sm leading-6 text-stone-600">粘贴 gemini.google.com 的完整 Cookie，或 Cookie-Editor 导出的 JSON（一个账号）。应包含 __Secure-1PSID 和 __Secure-1PSIDTS。当前仅支持文生图，额度由 Gemini 网页决定。</p>
+          <Textarea value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder="Cookie 字符串或 JSON" className="min-h-56 font-mono text-xs" />
+        </div>
+      );
+    }
     if (method === "token") {
       const tokenCount = splitTokens(tokenInput).length;
 
@@ -727,6 +736,12 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => setMethod("token")}
         />
         <MethodCard
+          title="导入 Gemini Cookie"
+          description="使用 Gemini 网页账号进行文生图，支持完整 Cookie 或 Cookie-Editor JSON。"
+          icon={KeyRound}
+          onClick={() => setMethod("gemini")}
+        />
+        <MethodCard
           title="导入 Session JSON"
           description="从 chatgpt.com 的 session 接口复制完整 JSON，自动提取 accessToken。"
           icon={FileJson}
@@ -786,6 +801,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <DialogTitle>
               {method === "menu"
                 ? "导入账户"
+                : method === "gemini"
+                  ? "导入 Gemini Cookie"
                 : method === "token"
                   ? "导入 Access Token"
                   : method === "session"
@@ -799,6 +816,8 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
             <DialogDescription className="text-sm leading-6">
               {method === "menu"
                 ? "选择一种导入方式。导入成功后会自动拉取邮箱、类型和额度。"
+                : method === "gemini"
+                  ? "每次导入一个 Gemini 网页账号。"
                 : method === "token"
                   ? "支持手动粘贴或从 TXT 文件导入，一行一个 Token。"
                   : method === "session"
@@ -814,6 +833,16 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           {renderMethodBody()}
 
           <DialogFooter className="pt-2">
+            {method === "gemini" ? (
+              <Button disabled={footerDisabled || !tokenInput.trim()} onClick={() => {
+                const token = tokenInput.trim();
+                if (!token.includes("__Secure-1PSID")) {
+                  toast.error("Cookie 中缺少 __Secure-1PSID");
+                  return;
+                }
+                void submitTokens([token], "Gemini Cookie 导入完成", [{ access_token: token, provider: "gemini", source_type: "web" }]);
+              }}>导入 Cookie</Button>
+            ) : null}
             <Button
               variant="secondary"
               className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
