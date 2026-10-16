@@ -133,11 +133,22 @@ def _extract_google_image_urls(text: str) -> list[str]:
     pattern = re.compile(
         r'https?://(?:lh\d+\.googleusercontent\.com|googleusercontent\.com|encrypted-tbn\d+\.gstatic\.com)/[^\s"\'\\<>]+'
     )
+    normalized_text = str(text or "")
+    normalized_text = re.sub(r"\\+u002f", "/", normalized_text)
+    normalized_text = re.sub(r"\\+u003d", "=", normalized_text)
+    normalized_text = re.sub(r"\\+u0026", "&", normalized_text)
+    normalized_text = normalized_text.replace(r"\/", "/")
     urls: list[str] = []
-    for match in pattern.finditer(text):
+    for match in pattern.finditer(normalized_text):
         url = match.group(0)
         # Clean unicode escapes or trailing quotes
-        cleaned = url.replace(r"\u003d", "=").replace(r"\u0026", "&").rstrip('"\')')
+        cleaned = (
+            url.replace(r"\/", "/")
+            .replace(r"\u002f", "/")
+            .replace(r"\u003d", "=")
+            .replace(r"\u0026", "&")
+            .rstrip('"\')')
+        )
         # Skip small icons/avatars and internal placeholders
         if "=s32" in cleaned or "=s64" in cleaned or "profile" in cleaned or "avatar" in cleaned or "image_generation_content" in cleaned:
             continue
@@ -466,18 +477,20 @@ class GeminiWebImageProvider:
         last_download_err: Exception | None = None
         for target_url in download_candidates:
             try:
-                img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS, stream=True, allow_redirects=False)
+                # Gemini's generated LH3 URL commonly redirects to a signed image
+                # object. Follow that redirect, then validate the final bytes.
+                img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS, allow_redirects=True)
                 try:
                     if img_resp.status_code != 200:
                         continue
-                    chunks = []
-                    downloaded = 0
-                    for chunk in img_resp.iter_content():
-                        downloaded += len(chunk)
-                        if downloaded > MAX_GEMINI_IMAGE_BYTES:
-                            raise ValueError("Generated image exceeds download limit")
-                        chunks.append(chunk)
-                    candidate = b"".join(chunks)
+                    content_length = str(img_resp.headers.get("content-length") or "").strip()
+                    if content_length.isdigit() and int(content_length) > MAX_GEMINI_IMAGE_BYTES:
+                        raise ValueError("Generated image exceeds download limit")
+                    candidate = bytes(img_resp.content or b"")
+                    if len(candidate) > MAX_GEMINI_IMAGE_BYTES:
+                        raise ValueError("Generated image exceeds download limit")
+                    if len(candidate) <= 1024:
+                        raise ValueError("Generated image response is too small")
                     with Image.open(BytesIO(candidate)) as image:
                         if image.width * image.height > 40_000_000:
                             raise ValueError("Generated image exceeds pixel limit")

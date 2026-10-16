@@ -72,6 +72,11 @@ def test_extract_google_image_urls():
     assert "https://googleusercontent.com/image_test_456" not in urls
 
 
+def test_extract_google_image_urls_decodes_escaped_slashes():
+    payload = r'"https:\/\/lh3.googleusercontent.com\/gg-dl\/AF1QipNabc12345\\u003ds1024"'
+    assert _extract_google_image_urls(payload) == ["https://lh3.googleusercontent.com/gg-dl/AF1QipNabc12345=s1024"]
+
+
 def test_remove_gemini_sparkle_watermark():
     img = Image.new("RGB", (200, 200), color=(100, 150, 200))
     buf = io.BytesIO()
@@ -239,11 +244,13 @@ def test_provider_download_validates_image_and_uses_master_url():
     raw = io.BytesIO()
     Image.new("RGB", (1024, 1024), "red").save(raw, "PNG")
     session.get.return_value.status_code = 200
-    session.get.return_value.iter_content.return_value = [raw.getvalue()]
+    session.get.return_value.headers = {"content-length": str(len(raw.getvalue()))}
+    session.get.return_value.content = raw.getvalue()
     result = provider.generate("red square")
     assert result["data"][0]["b64_json"]
     assert session.get.call_args.args[0].endswith("=s0")
+    assert session.get.call_args.kwargs["allow_redirects"] is True
     session.get.return_value.close.assert_called_once()
-    session.get.return_value.iter_content.return_value = [b"<html>not an image</html>"]
+    session.get.return_value.content = b"<html>not an image</html>"
     with pytest.raises(GeminiWebImageError, match="valid generated image"):
         provider.generate("red square")

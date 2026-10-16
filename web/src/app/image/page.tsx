@@ -117,7 +117,10 @@ function formatConversationTime(value: string) {
 
 function formatAvailableQuota(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status !== "禁用");
-  return String(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+  const chatgptAccounts = availableAccounts.filter((account) => String(account.provider || "").trim().toLowerCase() !== "gemini");
+  const total = chatgptAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0);
+  if (total > 0) return String(total);
+  return availableAccounts.some((account) => String(account.provider || "").trim().toLowerCase() === "gemini") ? "网页额度" : "0";
 }
 
 function createId() {

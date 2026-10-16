@@ -101,7 +101,7 @@ function formatCompact(value: number) {
 }
 
 function formatQuota(account: Account) {
-  if (account.provider === "gemini") return "网页额度";
+  if (String(account.provider || "").trim().toLowerCase() === "gemini") return "网页额度";
   return String(Math.max(0, account.quota));
 }
 
@@ -131,7 +131,10 @@ function formatRestoreAt(value?: string | null) {
 
 function formatQuotaSummary(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status === "正常");
-  return formatCompact(availableAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0));
+  const chatgptAccounts = availableAccounts.filter((account) => String(account.provider || "").trim().toLowerCase() !== "gemini");
+  const total = chatgptAccounts.reduce((sum, account) => sum + Math.max(0, account.quota), 0);
+  if (total > 0) return formatCompact(total);
+  return availableAccounts.some((account) => String(account.provider || "").trim().toLowerCase() === "gemini") ? "网页额度" : "0";
 }
 
 function maskToken(token?: string) {

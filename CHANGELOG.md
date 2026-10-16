@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.9.4 - 2026-10-16
+
++ [修复] Gemini 网页生图下载跟随 Google 图片地址的重定向；兼容 RPC 响应中转义的图片 URL，修复网页已生成但 API 返回 `Failed to download a valid generated image`。
++ [修复] Gemini 图片下载继续校验最终响应的图片格式、大小和像素数，避免无效响应进入接口结果。
++ [修复] Gemini 账号额度展示不再显示数值 `0`；账号表格、账号汇总和生图页在网页额度不可查询时显示“网页额度”，并排除 Gemini 账号对 ChatGPT 数值额度的影响。
++ [测试] 新增 Google 重定向、转义 URL 和下载校验回归测试；Gemini 相关测试共 18 项通过。
+
 ## 1.9.3 - 2026-10-16
 
 + [调整] ChatGPT 生图逻辑恢复到 v1.8.4 基线，移除 v1.8.5–v1.9.2 引入的 Sentinel/Chromium 修复路径；发布版本继续递增。
