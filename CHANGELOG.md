@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.6 - 2026-10-16
+
++ [修复] 根据 Gemini 网页“Download full size”真实抓包修正 `c8o8Fe` 请求：使用当前会话的 `/app/<conversation-id>` source path、网页 prompt 类型 `23` 及动态页面参数。
++ [修复] 解析 `gg-dl` 完整尺寸下载地址，不再把预览 URL 当作原图；继续保持 Gemini 原始字节、不本地放大、不重新编码。
++ [测试] 增加真实 `c8o8Fe` 响应和请求 payload 回归测试，Gemini provider 测试 20 项通过。
+
 ## 1.9.5 - 2026-10-16
 
 + [修复] Gemini 网页生图改用网页“下载完整尺寸图片”对应的 `c8o8Fe` RPC，优先获取 Google 服务端生成的完整尺寸/2x 下载地址，而不是把预览图误称为原图。

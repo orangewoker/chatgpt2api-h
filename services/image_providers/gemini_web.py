@@ -292,6 +292,9 @@ class GeminiWebImageProvider:
         self.snlm0e = ""  # Fetch a fresh page token for each generation session.
         self.timeout = max(10.0, float(timeout))
         self._session: requests.Session | None = None
+        self._build_label: str | None = None
+        self._session_id: str | None = None
+        self._language = "en"
 
         if not self.cookies.get("__Secure-1PSID"):
             raise GeminiWebImageError(
@@ -378,11 +381,29 @@ class GeminiWebImageProvider:
             match = re.search(r'"SNlM0e":"([^"]+)"', resp.text)
             if match:
                 self.snlm0e = match.group(1)
-                return self.snlm0e
 
             match_at = re.search(r'"at":"([^"]+)"', resp.text)
             if match_at:
                 self.snlm0e = match_at.group(1)
+
+            # These values are sent by the browser on c8o8Fe full-size
+            # downloads. They rotate with the Gemini web build/session.
+            for pattern in (
+                r'"bl":"([^"]+)"',
+                r'"buildLabel":"([^"]+)"',
+                r'"cfb2h":"([^"]+)"',
+            ):
+                match_bl = re.search(pattern, resp.text)
+                if match_bl:
+                    self._build_label = match_bl.group(1)
+                    break
+            match_sid = re.search(r'"f\.sid"\s*:\s*"?(\d+)', resp.text)
+            if match_sid:
+                self._session_id = match_sid.group(1)
+            match_lang = re.search(r'"hl":"([a-zA-Z-]+)"', resp.text)
+            if match_lang:
+                self._language = match_lang.group(1)
+            if self.snlm0e:
                 return self.snlm0e
 
             # If SNlM0e is not found, check if redirected to login or unauthenticated landing page
@@ -426,15 +447,26 @@ class GeminiWebImageProvider:
             inner = [
                 [[None, None, None, [None, None, None, None, None, token]],
                  [f"http://googleusercontent.com/image_generation_content/{image_index}", image_index],
-                 None, [19, prompt], None, None, None, None, None, gen_id],
+                 None, [23, prompt], None, None, None, None, None, gen_id],
                 [rid, rcid, cid, None, gen_id], 1, 0, 1,
             ]
             outer = [[[
                 "c8o8Fe", json.dumps(inner, separators=(",", ":"), ensure_ascii=False), None, "generic"
             ]]]
+            params = {
+                "rpcids": "c8o8Fe",
+                "_reqid": str(random.randint(100000, 999999)),
+                "rt": "c",
+                "source-path": f"/app/{cid}",
+                "hl": self._language,
+            }
+            if self._build_label:
+                params["bl"] = self._build_label
+            if self._session_id:
+                params["f.sid"] = self._session_id
             response = self.session.post(
                 f"{GEMINI_WEB_BASE}/_/BardChatUi/data/batchexecute",
-                params={"rpcids": "c8o8Fe", "_reqid": str(random.randint(100000, 999999)), "rt": "c", "source-path": "/app"},
+                params=params,
                 data={"at": self.snlm0e, "f.req": json.dumps(outer, separators=(",", ":"), ensure_ascii=False)},
                 headers={
                     "x-goog-ext-525001261-jspb": "[1,null,null,null,null,null,null,0,[4,4]]",

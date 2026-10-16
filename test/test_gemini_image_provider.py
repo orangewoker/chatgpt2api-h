@@ -280,3 +280,6 @@ def test_fetch_full_size_url_parses_c8o8fe_frame():
     session.post.return_value.status_code = 200
     session.post.return_value.text = ")]}'\\n[[[\"wrb.fr\",\"c8o8Fe\",\"[\\\"https://lh3.googleusercontent.com/full=s2048\\\"]\"]]]"
     assert provider._fetch_full_size_url("download-token", "red square", '["cid", "rid", "rcid"]') == "https://lh3.googleusercontent.com/full=s2048"
+    request = session.post.call_args
+    assert request.kwargs["params"]["source-path"] == "/app/cid"
+    assert "[23,\\\"red square\\\"]" in request.kwargs["data"]["f.req"]
