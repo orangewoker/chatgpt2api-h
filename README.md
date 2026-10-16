@@ -45,6 +45,20 @@ docker compose up -d
 - API 地址：`http://localhost:3000/v1`
 - 数据目录：`./data`
 
+### Gemini 网页生图
+
+支持通过 Gemini Web 会话 Cookie 使用 `gemini-image-2.5-flash`、`imagen-3` 等模型。将账号以 JSON 导入（`access_token` 填 Cookie 字符串，至少包含 `__Secure-1PSID` 和 `__Secure-1PSIDTS`，并标记 `provider` 为 `gemini`）：
+
+```json
+{
+  "access_token": "__Secure-1PSID=...; __Secure-1PSIDTS=...",
+  "provider": "gemini",
+  "type": "Gemini"
+}
+```
+
+导入后模型列表会自动出现 Gemini 图片模型；请求仍使用 OpenAI 兼容的 `/v1/images/generations` 接口。
+
 ### 飞牛 OS / 1Panel 一键安装
 
 两者都支持 Docker Compose。将仓库中的 `scripts/install-docker.sh` 上传到设备执行，脚本会自动准备数据目录、配置文件、Compose 文件并拉取镜像：

@@ -14,12 +14,14 @@ import tiktoken
 from services.account_service import account_service
 from services.config import config
 from services.image_storage_service import image_storage_service
+from services.image_providers import GeminiWebImageError, GeminiWebImageProvider
 from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeoutError, OpenAIBackendAPI
 from services.image_upscale import upscale_image_bytes
 from utils.helper import (
     IMAGE_MODELS,
     extract_image_from_message_content,
     is_codex_image_model,
+    is_gemini_image_model,
     is_supported_image_model,
     split_image_model,
 )
@@ -1310,6 +1312,39 @@ def stream_codex_image_outputs(
     raise ImageGenerationError("No image result found in response")
 
 
+def _generate_single_gemini_image(
+        request: ConversationRequest,
+        index: int,
+        total: int,
+) -> list[ImageOutput]:
+    token = account_service.get_available_access_token(provider="gemini")
+    provider = None
+    try:
+        account = account_service.get_account(token) or {}
+        provider = GeminiWebImageProvider(token, account=account)
+        result = provider.generate(
+            prompt=prompt_with_global_system(request.prompt),
+            size=request.size or "1024x1024",
+            ratio=getattr(request, "ratio", None),
+            images=request.images or None,
+        )
+        data = format_image_result(
+            result.get("data") or [], request.prompt, request.response_format,
+            request.base_url, int(result.get("created") or time.time()),
+        )["data"]
+        if not data:
+            raise GeminiWebImageError("Gemini did not return an image.", code="no_image_generated")
+        account_service.mark_image_result(token, True, release_slot=False)
+        return [ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)]
+    except GeminiWebImageError as exc:
+        account_service.mark_image_result(token, False, release_slot=False)
+        raise ImageGenerationError(str(exc), status_code=exc.status_code, code=exc.code) from exc
+    finally:
+        if provider is not None:
+            provider.close()
+        account_service.release_image_slot(token)
+
+
 def _generate_single_image(
         request: ConversationRequest,
         index: int,
@@ -1320,6 +1355,12 @@ def _generate_single_image(
     该函数在独立线程中运行，每个线程使用不同的账号，
     实现并行生图，避免串行超时阻塞。
     """
+    if is_gemini_image_model(request.model):
+        try:
+            return _generate_single_gemini_image(request, index, total)
+        except RuntimeError as exc:
+            raise ImageGenerationError("No available Gemini Web account.", status_code=429, code="insufficient_quota") from exc
+
     # 模型返回文本而非图片的最大重试次数
     MAX_TEXT_REPLY_RETRIES = 3
     # TLS 连接错误最大重试次数

@@ -155,6 +155,10 @@ function displayAccountType(account: Account) {
 }
 
 function displayAccountSource(account: Account) {
+  const provider = String(account.provider || "").trim().toLowerCase();
+  if (provider === "gemini") {
+    return "gemini";
+  }
   const source = String(account.source_type || "").trim().toLowerCase();
   if (!source) {
     return "web";
