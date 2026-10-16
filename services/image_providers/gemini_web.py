@@ -554,11 +554,15 @@ class GeminiWebImageProvider:
         is_zh = any('\u4e00' <= c <= '\u9fff' for c in cleaned_prompt)
         if is_zh:
             ratio_hint = f"（宽高比 {aspect_ratio}）" if aspect_ratio else ""
-            full_prompt = f"请生成一张高质量图片：{cleaned_prompt}{ratio_hint}"
+            # Gemini Web decides the generated master size from the natural-language
+            # request.  Explicitly request the same high-resolution intent used by
+            # the web UI; the later c8o8Fe download then retrieves that master
+            # instead of a 1K preview.
+            full_prompt = f"请生成一张高质量4K画质图片：{cleaned_prompt}{ratio_hint}"
             lang = ["zh-CN"]
         else:
             ratio_hint = f" (aspect ratio {aspect_ratio})" if aspect_ratio else ""
-            full_prompt = f"Please generate a high-quality image: {cleaned_prompt}{ratio_hint}"
+            full_prompt = f"Please generate a high-resolution 4K quality image: {cleaned_prompt}{ratio_hint}"
             lang = ["en"]
 
         # Construct Google Batchexecute RPC payload
@@ -660,7 +664,12 @@ class GeminiWebImageProvider:
             source_url, token, metadata_json = full_size_context
             full_size_url = self._fetch_full_size_url(token, cleaned_prompt, metadata_json)
             if full_size_url:
-                download_candidates.append(re.sub(r"=[^/]*$", "", full_size_url) + "=s0")
+                # c8o8Fe already returns the exact URL used by the web UI's
+                # "Download full size" action (usually ending in
+                # ``=s0-d-I?alr=yes``).  Do not normalize it to bare ``=s0``:
+                # that drops the download rendition flags and can yield the
+                # 1K preview instead of the 2K master.
+                download_candidates.append(full_size_url)
             if source_url not in image_urls:
                 image_urls.insert(0, source_url)
         for u in image_urls:

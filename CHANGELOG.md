@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.7 - 2026-10-16
+
++ [修复] Gemini 网页全尺寸下载保留 `c8o8Fe` 返回的完整 `=s0-d-I?alr=yes` 下载地址，避免丢失下载渲染参数后退回 1K 预览图。
++ [调整] Gemini 生图请求采用网页使用的高分辨率 4K 生成意图；Gemini 继续直接返回原始字节，不做本地超分、去水印或重编码。
++ [验证] 侧栏浏览器实测“Download full size”下载结果为 2048×2048 原图；Gemini provider 测试 20 项通过。
+
 ## 1.9.6 - 2026-10-16
 
 + [修复] 根据 Gemini 网页“Download full size”真实抓包修正 `c8o8Fe` 请求：使用当前会话的 `/app/<conversation-id>` source path、网页 prompt 类型 `23` 及动态页面参数。
