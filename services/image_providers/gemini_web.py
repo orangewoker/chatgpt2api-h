@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import random
+import string
 import re
 import time
 from io import BytesIO
@@ -14,7 +16,6 @@ from curl_cffi import requests
 from PIL import Image
 
 from services.proxy_service import proxy_settings
-from utils.gemini_watermark import remove_gemini_sparkle
 from utils.log import logger
 
 GEMINI_WEB_BASE = "https://gemini.google.com"
@@ -160,6 +161,80 @@ def _extract_google_image_urls(text: str) -> list[str]:
         if cleaned not in urls:
             urls.append(cleaned)
     return urls
+
+
+def _extract_gemini_full_size_context(text: str) -> tuple[str, str, str] | None:
+    """Extract the token and conversation ids used by Gemini's full-size RPC."""
+    raw_text = str(text or "")
+    payloads: list[Any] = []
+    try:
+        start = raw_text.find("[")
+        if start >= 0:
+            payloads.append(json.loads(raw_text[start:]))
+    except Exception:
+        pass
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line.startswith("["):
+            line = line[line.find("[") :] if "[" in line else ""
+        if not line:
+            continue
+        try:
+            payloads.append(json.loads(line))
+        except Exception:
+            continue
+    if not payloads:
+        return None
+
+    def walk(value: Any):
+        if isinstance(value, str) and value.startswith("["):
+            try:
+                yield from walk(json.loads(value))
+            except Exception:
+                return
+        elif isinstance(value, list):
+            # A wrb.fr frame contains the JSON encoded RPC response at index 2.
+            if len(value) > 2 and value[0] == "wrb.fr" and isinstance(value[2], str):
+                try:
+                    inner = json.loads(value[2])
+                except Exception:
+                    inner = None
+                if isinstance(inner, list):
+                    metadata = inner[1] if len(inner) > 1 else None
+                    candidates = inner[4] if len(inner) > 4 else None
+                    if isinstance(metadata, list) and len(metadata) >= 2:
+                        cid, rid = str(metadata[0] or ""), str(metadata[1] or "")
+                        if cid and rid and isinstance(candidates, list):
+                            for candidate in candidates:
+                                if not isinstance(candidate, list):
+                                    continue
+                                rcid = str(candidate[0] or "") if candidate else ""
+                                if not rcid.startswith("rc_"):
+                                    continue
+                                # Old format stores [url, token] at indexes 3/5;
+                                # new dict format stores them at indexes 3/4.
+                                def find_image_context(value: Any):
+                                    if isinstance(value, list):
+                                        if len(value) > 5 and isinstance(value[3], str) and isinstance(value[5], str) and "googleusercontent.com" in value[3]:
+                                            yield value[3], value[5]
+                                        elif len(value) > 4 and isinstance(value[3], str) and isinstance(value[4], str) and "googleusercontent.com" in value[3]:
+                                            yield value[3], value[4]
+                                        for nested in value:
+                                            yield from find_image_context(nested)
+                                    elif isinstance(value, dict):
+                                        for nested in value.values():
+                                            yield from find_image_context(nested)
+
+                                for source_url, token in find_image_context(candidate):
+                                    yield source_url, token, json.dumps([cid, rid, rcid])
+            for item in value:
+                yield from walk(item)
+
+    for payload in payloads:
+        for result in walk(payload):
+            if result:
+                return result
+    return None
 
 
 def _extract_gemini_response_text(resp_text: str) -> str:
@@ -342,6 +417,86 @@ class GeminiWebImageProvider:
             )
         return self.snlm0e
 
+    def _fetch_full_size_url(self, token: str, prompt: str, metadata_json: str, image_index: int = 0) -> str | None:
+        """Call the same c8o8Fe RPC used by Gemini's Download full size button."""
+        try:
+            cid, rid, rcid = json.loads(metadata_json)
+            gen_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=6)) * 3
+            gen_id = gen_id[:16]
+            inner = [
+                [[None, None, None, [None, None, None, None, None, token]],
+                 [f"http://googleusercontent.com/image_generation_content/{image_index}", image_index],
+                 None, [19, prompt], None, None, None, None, None, gen_id],
+                [rid, rcid, cid, None, gen_id], 1, 0, 1,
+            ]
+            outer = [[[
+                "c8o8Fe", json.dumps(inner, separators=(",", ":"), ensure_ascii=False), None, "generic"
+            ]]]
+            response = self.session.post(
+                f"{GEMINI_WEB_BASE}/_/BardChatUi/data/batchexecute",
+                params={"rpcids": "c8o8Fe", "_reqid": str(random.randint(100000, 999999)), "rt": "c", "source-path": "/app"},
+                data={"at": self.snlm0e, "f.req": json.dumps(outer, separators=(",", ":"), ensure_ascii=False)},
+                headers={
+                    "x-goog-ext-525001261-jspb": "[1,null,null,null,null,null,null,0,[4,4]]",
+                    "x-goog-ext-73010989-jspb": "[0]",
+                },
+                timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS,
+            )
+            if response.status_code != 200:
+                return None
+            body = response.text
+            # batchexecute may return one JSON frame per line or a single
+            # concatenated frame. Walk every decodable JSON fragment and look
+            # for the c8o8Fe result instead of relying on a fixed line shape.
+            candidates: list[Any] = []
+            for line in body.splitlines():
+                line = line.strip()
+                if not line.startswith("["):
+                    line = line[line.find("[") :] if "[" in line else ""
+                if not line:
+                    continue
+                try:
+                    candidates.append(json.loads(line))
+                except Exception:
+                    continue
+            if not candidates:
+                try:
+                    start = body.find("[")
+                    if start >= 0:
+                        candidates.append(json.loads(body[start:]))
+                except Exception:
+                    pass
+
+            def find_url(value: Any) -> str | None:
+                if isinstance(value, str) and value.startswith("["):
+                    try:
+                        return find_url(json.loads(value))
+                    except Exception:
+                        return None
+                if isinstance(value, list):
+                    if len(value) > 2 and value[0] == "wrb.fr" and value[1] == "c8o8Fe":
+                        return find_url(value[2])
+                    if value and isinstance(value[0], str) and value[0].startswith("http"):
+                        return value[0]
+                    for item in value:
+                        result = find_url(item)
+                        if result:
+                            return result
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        result = find_url(item)
+                        if result:
+                            return result
+                return None
+
+            for candidate in candidates:
+                url = find_url(candidate)
+                if url:
+                    return url
+        except Exception as exc:
+            logger.debug("Gemini full-size RPC failed: %s", type(exc).__name__)
+        return None
+
     def generate(
         self,
         prompt: str,
@@ -464,9 +619,21 @@ class GeminiWebImageProvider:
                 code="no_image_generated",
             )
 
-        # Try high-resolution master URL (=s0) first, then fall back to original URL
+        # Prefer Gemini's own "Download full size" URL, then fall back to the
+        # generated URL. The c8o8Fe URL is server-side upscaled and preserves
+        # the exact bytes/size returned by the web UI.
         download_candidates: list[str] = []
+        full_size_context = _extract_gemini_full_size_context(resp_text)
+        if full_size_context:
+            source_url, token, metadata_json = full_size_context
+            full_size_url = self._fetch_full_size_url(token, cleaned_prompt, metadata_json)
+            if full_size_url:
+                download_candidates.append(re.sub(r"=[^/]*$", "", full_size_url) + "=s0")
+            if source_url not in image_urls:
+                image_urls.insert(0, source_url)
         for u in image_urls:
+            # Legacy responses with no c8o8Fe token can still expose an
+            # original LH3 master through =s0.
             hr_u = _high_res_image_url(u)
             if hr_u not in download_candidates:
                 download_candidates.append(hr_u)
@@ -511,38 +678,10 @@ class GeminiWebImageProvider:
                 code="image_download_failed",
             )
 
-        # Remove Sparkle star watermark
-        clean_bytes = remove_gemini_sparkle(raw_bytes)
-
-        # Ensure high resolution (>= 1K) and support explicit 2K/4K scaling
-        try:
-            im = Image.open(BytesIO(clean_bytes))
-            target_w, target_h = None, None
-            if size and "x" in size:
-                try:
-                    parts = size.lower().split("x")
-                    target_w, target_h = int(parts[0]), int(parts[1])
-                except Exception:
-                    pass
-
-            max_dim = max(im.width, im.height)
-            if target_w and target_h and (target_w >= 1920 or target_h >= 1920):
-                # 2K / 4K upscale if explicitly requested
-                im = im.convert("RGB").resize((target_w, target_h), Image.Resampling.LANCZOS)
-                buf = BytesIO()
-                im.save(buf, format="JPEG", quality=95)
-                clean_bytes = buf.getvalue()
-            elif max_dim < 1024:
-                # Guarantee minimum 1K resolution (never deliver a 512px thumbnail)
-                scale = 1024.0 / max_dim
-                new_w = int(round(im.width * scale))
-                new_h = int(round(im.height * scale))
-                im = im.convert("RGB").resize((new_w, new_h), Image.Resampling.LANCZOS)
-                buf = BytesIO()
-                im.save(buf, format="JPEG", quality=95)
-                clean_bytes = buf.getvalue()
-        except Exception as exc:
-            logger.warning(f"Failed to post-process Gemini image resolution: {exc}")
+        # Gemini's full-size download is already the original web artifact.
+        # Do not remove its watermark or resize/re-encode it locally; those
+        # operations belong only to the GPT image provider path.
+        clean_bytes = raw_bytes
 
         b64_data = base64.b64encode(clean_bytes).decode("utf-8")
 

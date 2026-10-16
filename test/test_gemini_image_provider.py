@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 from PIL import Image
@@ -12,6 +13,7 @@ from services.image_providers.gemini_web import (
     GeminiWebImageProvider,
     _determine_aspect_ratio,
     _extract_google_image_urls,
+    _extract_gemini_full_size_context,
     _high_res_image_url,
     _parse_cookie_input,
 )
@@ -254,3 +256,27 @@ def test_provider_download_validates_image_and_uses_master_url():
     session.get.return_value.content = b"<html>not an image</html>"
     with pytest.raises(GeminiWebImageError, match="valid generated image"):
         provider.generate("red square")
+
+
+def test_extract_gemini_full_size_context_from_old_stream_shape():
+    candidate = ["rc_fixture"] + [None] * 12
+    candidate[12] = [None] * 8
+    candidate[12][7] = [[[None, None, None, [None, None, None, "https://lh3.googleusercontent.com/gg-dl/preview=s512", None, "download-token"]]]]
+    inner = [None, ["conversation-id", "response-id"], None, None, [candidate]]
+    payload = [["wrb.fr", "StreamGenerate", json.dumps(inner)]]
+    context = _extract_gemini_full_size_context(")]}\'\n" + json.dumps(payload))
+    assert context == (
+        "https://lh3.googleusercontent.com/gg-dl/preview=s512",
+        "download-token",
+        '["conversation-id", "response-id", "rc_fixture"]',
+    )
+
+
+def test_fetch_full_size_url_parses_c8o8fe_frame():
+    provider = GeminiWebImageProvider("__Secure-1PSID=fixture")
+    provider.snlm0e = "fixture-at"
+    session = MagicMock()
+    provider._session = session
+    session.post.return_value.status_code = 200
+    session.post.return_value.text = ")]}'\\n[[[\"wrb.fr\",\"c8o8Fe\",\"[\\\"https://lh3.googleusercontent.com/full=s2048\\\"]\"]]]"
+    assert provider._fetch_full_size_url("download-token", "red square", '["cid", "rid", "rcid"]') == "https://lh3.googleusercontent.com/full=s2048"

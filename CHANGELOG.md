@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.9.5 - 2026-10-16
+
++ [修复] Gemini 网页生图改用网页“下载完整尺寸图片”对应的 `c8o8Fe` RPC，优先获取 Google 服务端生成的完整尺寸/2x 下载地址，而不是把预览图误称为原图。
++ [调整] Gemini 返回完整下载响应的原始字节、格式和尺寸，不再执行本地去水印或 Lanczos 放大；GPT 图片仍保留原有本地超分链路。
++ [测试] 增加 Gemini 完整尺寸上下文解析回归测试，Gemini provider 测试 19 项通过。
+
 ## 1.9.4 - 2026-10-16
 
 + [修复] Gemini 网页生图下载跟随 Google 图片地址的重定向；兼容 RPC 响应中转义的图片 URL，修复网页已生成但 API 返回 `Failed to download a valid generated image`。
