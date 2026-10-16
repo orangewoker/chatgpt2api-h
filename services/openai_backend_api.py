@@ -24,7 +24,14 @@ from services.account_service import account_service
 from services.config import config
 from services.proxy_service import proxy_settings
 from services.sentinel_solver_client import solve_turnstile, solver_user_agent
-from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
+from utils.helper import (
+    UpstreamHTTPError,
+    ensure_ok,
+    iter_sse_payloads,
+    new_uuid,
+    resolve_image_upstream_model,
+    split_image_model,
+)
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
 
@@ -580,9 +587,14 @@ class OpenAIBackendAPI:
         return payload
 
     def _image_model_settings(self, model: str) -> tuple[str, str]:
-        """网页生图使用 auto，由服务端选择当前可用模型。"""
-        _, base_model = split_image_model(model)
-        return (CODEX_IMAGE_MODEL if base_model == CODEX_IMAGE_MODEL else "auto"), ""
+        """把公开图片模型映射为上游模型及思考强度。"""
+        upstream_model = resolve_image_upstream_model(model, config.default_upstream_model_name)
+        if not upstream_model:
+            return "auto", ""
+        model_name, separator, suffix = upstream_model.rpartition("-")
+        if separator and suffix.lower() in {"standard", "extended", "max"}:
+            return model_name, suffix.lower()
+        return upstream_model, self._normalize_thinking_effort(config.default_thinking_effort)
 
     def _image_headers(self, path: str, requirements: ChatRequirements, conduit_token: str = "", accept: str = "*/*") -> \
             Dict[str, str]:

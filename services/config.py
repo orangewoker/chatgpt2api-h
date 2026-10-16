@@ -596,23 +596,6 @@ class ConfigStore:
         ).strip().rstrip("/")
 
     @property
-    def sentinel_solver_url(self) -> str:
-        """内网 sentinel 求解服务。为空时退回本地 Turnstile 模拟。"""
-        return str(
-            os.getenv("CHATGPT2API_SENTINEL_SOLVER_URL")
-            or self.data.get("sentinel_solver_url")
-            or ""
-        ).strip().rstrip("/")
-
-    @property
-    def sentinel_solver_key(self) -> str:
-        return str(
-            os.getenv("CHATGPT2API_SENTINEL_SOLVER_KEY")
-            or self.data.get("sentinel_solver_key")
-            or ""
-        ).strip()
-
-    @property
     def app_version(self) -> str:
         try:
             value = VERSION_FILE.read_text(encoding="utf-8").strip()
