@@ -448,7 +448,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
       return (
         <div className="space-y-4">
           <Button variant="ghost" onClick={() => setMethod("menu")}><ArrowLeft className="size-4" />返回导入方式</Button>
-          <p className="text-sm leading-6 text-stone-600">粘贴 gemini.google.com 的完整 Cookie，或 Cookie-Editor 导出的 JSON（一个账号）。应包含 __Secure-1PSID 和 __Secure-1PSIDTS。当前仅支持文生图，额度由 Gemini 网页决定。</p>
+          <p className="text-sm leading-6 text-stone-600">粘贴 gemini.google.com 的完整 Cookie，或 Cookie-Editor 导出的 JSON（一个账号）。应包含 __Secure-1PSID 和 __Secure-1PSIDTS。支持文生图、上传参考图编辑和全尺寸原图下载，额度由 Gemini 网页决定。</p>
           <Textarea value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} placeholder="Cookie 字符串或 JSON" className="min-h-56 font-mono text-xs" />
         </div>
       );

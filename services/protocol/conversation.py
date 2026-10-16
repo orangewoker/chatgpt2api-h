@@ -1317,8 +1317,6 @@ def _generate_single_gemini_image(
         index: int,
         total: int,
 ) -> list[ImageOutput]:
-    if request.images:
-        raise ImageGenerationError("Gemini Web currently supports text-to-image only.", status_code=400, code="unsupported_operation")
     try:
         token = account_service.get_available_access_token(provider="gemini")
     except RuntimeError as exc:

@@ -15,6 +15,7 @@ from services.protocol.conversation import (
     stream_image_outputs_with_pool,
 )
 from utils.image_tokens import count_image_inputs_tokens, count_image_output_items_tokens, image_usage
+from utils.helper import is_gemini_image_model
 
 
 def _composite_mask(
@@ -52,6 +53,8 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     prompt = str(body.get("prompt") or "")
     images = body.get("images") or []
     masks = body.get("mask") or []
+    if masks and is_gemini_image_model(str(body.get("model") or "")):
+        raise ImageGenerationError("Gemini Web 不支持 mask 蒙版，请使用参考图和文字描述编辑。", status_code=400, code="unsupported_operation")
     images = _composite_mask(images, masks)
     model = str(body.get("model") or "gpt-image-2")
     n = int(body.get("n") or 1)

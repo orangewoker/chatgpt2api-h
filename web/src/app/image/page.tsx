@@ -1555,10 +1555,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     }
 
     const effectiveImageMode: ImageConversationMode = referenceImageFiles.length > 0 ? "edit" : "generate";
-    if (effectiveImageMode === "edit" && (imageModel.startsWith("gemini-") || imageModel.startsWith("imagen-"))) {
-      toast.error("Gemini 网页生图当前仅支持文生图，请移除参考图或切换模型");
-      return;
-    }
 
     const targetConversation = selectedConversationId
       ? conversationsRef.current.find((conversation) => conversation.id === selectedConversationId) ?? null

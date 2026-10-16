@@ -10,9 +10,9 @@ import re
 import time
 from io import BytesIO
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 from PIL import Image
 
 from services.proxy_service import proxy_settings
@@ -163,7 +163,7 @@ def _extract_google_image_urls(text: str) -> list[str]:
     return urls
 
 
-def _extract_gemini_full_size_context(text: str) -> tuple[str, str, str] | None:
+def _extract_gemini_full_size_context(text: str) -> tuple[str, str, str, str] | None:
     """Extract the token and conversation ids used by Gemini's full-size RPC."""
     raw_text = str(text or "")
     payloads: list[Any] = []
@@ -225,8 +225,20 @@ def _extract_gemini_full_size_context(text: str) -> tuple[str, str, str] | None:
                                         for nested in value.values():
                                             yield from find_image_context(nested)
 
-                                for source_url, token in find_image_context(candidate):
-                                    yield source_url, token, json.dumps([cid, rid, rcid])
+                                def find_image_id(value: Any) -> str | None:
+                                    if isinstance(value, str) and value.startswith("http://googleusercontent.com/image_generation_content/"):
+                                        return value
+                                    if isinstance(value, (list, dict)):
+                                        for item in (value.values() if isinstance(value, dict) else value):
+                                            found = find_image_id(item)
+                                            if found:
+                                                return found
+                                    return None
+
+                                image_id = find_image_id(candidate)
+                                if image_id:
+                                    for source_url, token in find_image_context(candidate):
+                                        yield source_url, token, json.dumps([cid, rid, rcid]), image_id
             for item in value:
                 yield from walk(item)
 
@@ -295,6 +307,7 @@ class GeminiWebImageProvider:
         self._build_label: str | None = None
         self._session_id: str | None = None
         self._language = "en"
+        self._push_id = ""
 
         if not self.cookies.get("__Secure-1PSID"):
             raise GeminiWebImageError(
@@ -397,12 +410,15 @@ class GeminiWebImageProvider:
                 if match_bl:
                     self._build_label = match_bl.group(1)
                     break
-            match_sid = re.search(r'"f\.sid"\s*:\s*"?(\d+)', resp.text)
+            match_sid = re.search(r'"(?:f\.sid|FdrFJe)"\s*:\s*"?(-?\d+)', resp.text)
             if match_sid:
                 self._session_id = match_sid.group(1)
             match_lang = re.search(r'"hl":"([a-zA-Z-]+)"', resp.text)
             if match_lang:
                 self._language = match_lang.group(1)
+            match_push = re.search(r'"qKIAYe"\s*:\s*"([^\"]+)"', resp.text)
+            if match_push:
+                self._push_id = match_push.group(1)
             if self.snlm0e:
                 return self.snlm0e
 
@@ -438,7 +454,7 @@ class GeminiWebImageProvider:
             )
         return self.snlm0e
 
-    def _fetch_full_size_url(self, token: str, prompt: str, metadata_json: str, image_index: int = 0) -> str | None:
+    def _fetch_full_size_url(self, token: str, prompt: str, metadata_json: str, image_index: int = 0, *, image_id: str) -> str | None:
         """Call the same c8o8Fe RPC used by Gemini's Download full size button."""
         try:
             cid, rid, rcid = json.loads(metadata_json)
@@ -446,7 +462,7 @@ class GeminiWebImageProvider:
             gen_id = gen_id[:16]
             inner = [
                 [[None, None, None, [None, None, None, None, None, token]],
-                 [f"http://googleusercontent.com/image_generation_content/{image_index}", image_index],
+                 [image_id, image_index],
                  None, [23, prompt], None, None, None, None, None, gen_id],
                 [rid, rcid, cid, None, gen_id], 1, 0, 1,
             ]
@@ -457,7 +473,7 @@ class GeminiWebImageProvider:
                 "rpcids": "c8o8Fe",
                 "_reqid": str(random.randint(100000, 999999)),
                 "rt": "c",
-                "source-path": f"/app/{cid}",
+                "source-path": f"/app/{cid.removeprefix('c_')}",
                 "hl": self._language,
             }
             if self._build_label:
@@ -475,8 +491,10 @@ class GeminiWebImageProvider:
                 timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS,
             )
             if response.status_code != 200:
+                response.close()
                 return None
             body = response.text
+            response.close()
             # batchexecute may return one JSON frame per line or a single
             # concatenated frame. Walk every decodable JSON fragment and look
             # for the c8o8Fe result instead of relying on a fixed line shape.
@@ -529,35 +547,156 @@ class GeminiWebImageProvider:
             logger.debug("Gemini full-size RPC failed: %s", type(exc).__name__)
         return None
 
+    def _upload_images(self, images: list[str | tuple[bytes, str, str]]) -> list[list[Any]]:
+        """Upload reference bytes to Gemini storage and attach IDs to the prompt."""
+        if len(images) > 10:
+            raise GeminiWebImageError("Gemini 最多支持 10 张参考图。", status_code=400, code="invalid_image")
+        validated = []
+        for index, item in enumerate(images):
+            if isinstance(item, str):
+                try:
+                    encoded = item.split(",", 1)[1] if item.startswith("data:") else item
+                    if len(encoded) > (MAX_GEMINI_IMAGE_BYTES + 2) // 3 * 4:
+                        raise ValueError("size limit")
+                    data = base64.b64decode(encoded, validate=True)
+                    filename = f"reference-{index + 1}.png"
+                except (ValueError, IndexError) as exc:
+                    raise GeminiWebImageError("参考图 Base64 数据无效。", status_code=400, code="invalid_image") from exc
+            else:
+                data, filename, _mime = item
+            if not data or len(data) > MAX_GEMINI_IMAGE_BYTES:
+                raise GeminiWebImageError("参考图为空或超过 50MB。", status_code=400, code="invalid_image")
+            try:
+                with Image.open(BytesIO(data)) as image:
+                    if image.width * image.height > 40_000_000:
+                        raise ValueError("pixel limit")
+                    mime = Image.MIME.get(image.format or "", "")
+                    if mime not in {"image/jpeg", "image/png", "image/webp", "image/gif"}:
+                        raise ValueError("unsupported format")
+                    image.verify()
+                    extension = "jpg" if mime == "image/jpeg" else mime.split("/")[1]
+                    filename = str(filename).rsplit(".", 1)[0] + "." + extension
+            except Exception as exc:
+                raise GeminiWebImageError("参考图必须是有效的 JPEG/PNG/WebP/GIF 图片。", status_code=400, code="invalid_image") from exc
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", str(filename).replace("\\", "/").rsplit("/", 1)[-1])[:120] or "reference.png"
+            validated.append((data, safe_name, mime))
+        if not self._push_id:
+            raise GeminiWebImageError("Gemini 页面缺少文件上传标识，请刷新 Cookie 后重试。", code="image_upload_failed")
+        attachments = []
+        for data, filename, mime in validated:
+            multipart = CurlMime()
+            try:
+                multipart.addpart(name="file", content_type=mime, filename=filename, data=data)
+                response = self.session.post(
+                    "https://content-push.googleapis.com/upload",
+                    headers={"X-Tenant-Id": "bard-storage", "Push-ID": self._push_id},
+                    multipart=multipart,
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+                try:
+                    file_id = response.text.strip()
+                    if response.status_code != 200 or not file_id.startswith("/contrib_service/") or len(file_id) > 4096:
+                        raise GeminiWebImageError("Gemini 参考图上传失败，请重试。", code="image_upload_failed")
+                    attachments.append([[file_id], filename])
+                finally:
+                    response.close()
+            except GeminiWebImageError:
+                raise
+            except Exception as exc:
+                raise GeminiWebImageError("Gemini 参考图上传连接失败，请重试。", code="image_upload_failed") from exc
+            finally:
+                multipart.close()
+        return attachments
+
+    def _download_full_size(self, url: str) -> bytes:
+        """Resolve Google's HTTP *and text-body* redirects without preview fallback.
+
+        The /gg-dl/...=d-I?alr=yes response can be a URL, not an image. Its
+        destination can return another URL before the final /rd-gg-dl/ image.
+        Following HTTP 3xx alone silently missed this protocol in older versions.
+        """
+        parsed = urlparse(url)
+        if not parsed.query and "=" not in parsed.path.rsplit("/", 1)[-1]:
+            url += "=d-I?alr=yes"
+        visited: set[str] = set()
+        for _ in range(8):
+            parsed = urlparse(url)
+            if (parsed.scheme != "https" or parsed.username or parsed.password
+                    or parsed.port not in (None, 443)
+                    or not (re.fullmatch(r"lh\d+\.google(?:usercontent)?\.com", parsed.hostname or "")
+                            or parsed.hostname == "work.fife.usercontent.google.com")
+                    or not parsed.path.startswith(("/gg/", "/rd-gg/", "/gg-dl/", "/rd-gg-dl/", "/ggms/"))
+                    or url in visited):
+                break
+            visited.add(url)
+            response = self.session.get(url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS, allow_redirects=False)
+            try:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    url = urljoin(url, str(response.headers.get("location") or "").strip())
+                    continue
+                if response.status_code != 200:
+                    break
+                length = str(response.headers.get("content-length") or "")
+                if length.isdigit() and int(length) > MAX_GEMINI_IMAGE_BYTES:
+                    break
+                content = bytes(response.content or b"")
+                if len(content) > MAX_GEMINI_IMAGE_BYTES:
+                    break
+                # alr=yes uses a 200 text/plain body to convey the next URL.
+                if len(content) < 16_384:
+                    target = content.decode("utf-8", errors="replace").strip()
+                    if target.startswith('"'):
+                        try:
+                            target = json.loads(target)
+                        except ValueError:
+                            target = ""
+                    if isinstance(target, str) and target.startswith("https://"):
+                        url = target
+                        continue
+                if len(content) <= 1024:
+                    break
+                try:
+                    with Image.open(BytesIO(content)) as image:
+                        if image.width * image.height > 40_000_000:
+                            break
+                        image.verify()
+                except (OSError, ValueError, Image.DecompressionBombError):
+                    break
+                return content
+            finally:
+                response.close()
+        raise GeminiWebImageError(
+            "Gemini 全尺寸原图下载失败；未返回预览图，请重试。",
+            code="full_size_download_failed",
+        )
+
     def generate(
         self,
         prompt: str,
         *,
         size: str = "1024x1024",
         ratio: str | None = None,
-        images: list[str] | None = None,
+        images: list[str | tuple[bytes, str, str]] | None = None,
     ) -> dict[str, Any]:
         cleaned_prompt = str(prompt or "").strip()
         if not cleaned_prompt:
             raise GeminiWebImageError("prompt is required", status_code=400, code="invalid_prompt")
-        if images:
-            raise GeminiWebImageError("Gemini Web currently supports text-to-image only.", status_code=400, code="unsupported_operation")
         if size and size != "auto":
             match = re.fullmatch(r"(\d+)x(\d+)", size.lower())
             if not match or not all(1 <= int(v) <= 4096 for v in match.groups()):
                 raise GeminiWebImageError("Gemini image dimensions must be between 1 and 4096.", status_code=400, code="invalid_size")
 
         at_token = self._ensure_snlm0e()
+        attachments = self._upload_images(images) if images else None
 
         # Build prompt with ratio & generation intent
         aspect_ratio = _determine_aspect_ratio(size, ratio)
         is_zh = any('\u4e00' <= c <= '\u9fff' for c in cleaned_prompt)
         if is_zh:
             ratio_hint = f"（宽高比 {aspect_ratio}）" if aspect_ratio else ""
-            # Gemini Web decides the generated master size from the natural-language
-            # request.  Explicitly request the same high-resolution intent used by
-            # the web UI; the later c8o8Fe download then retrieves that master
-            # instead of a 1K preview.
+            # Resolution intent is only a prompt hint, not a pixel guarantee.
+            # Preserve the actual pixels returned by the full-size download.
             full_prompt = f"请生成一张高质量4K画质图片：{cleaned_prompt}{ratio_hint}"
             lang = ["zh-CN"]
         else:
@@ -567,7 +706,7 @@ class GeminiWebImageProvider:
 
         # Construct Google Batchexecute RPC payload
         req_payload = [
-            [full_prompt, 0, None, None, None, None, 0],
+            [full_prompt, 0, None, attachments, None, None, 0],
             lang,
             [None, None, None],
             None, None, None, [1], 0, [], None, None, None, None, None,
@@ -616,9 +755,11 @@ class GeminiWebImageProvider:
 
         resp_text = resp.text
 
-        # Extract image URLs from RPC payload
+        # A valid full-size context is sufficient even if the preview URL's
+        # path shape changes and the legacy preview extractor misses it.
+        context = _extract_gemini_full_size_context(resp_text)
         image_urls = _extract_google_image_urls(resp_text)
-        if not image_urls:
+        if not context and not image_urls:
             explanation = _extract_gemini_response_text(resp_text)
             logger.warning("Gemini Web response contained no generated image")
             explanation_lower = explanation.lower()
@@ -655,77 +796,29 @@ class GeminiWebImageProvider:
                 code="no_image_generated",
             )
 
-        # Prefer Gemini's own "Download full size" URL, then fall back to the
-        # generated URL. The c8o8Fe URL is server-side upscaled and preserves
-        # the exact bytes/size returned by the web UI.
-        download_candidates: list[str] = []
-        full_size_context = _extract_gemini_full_size_context(resp_text)
-        if full_size_context:
-            source_url, token, metadata_json = full_size_context
-            # The web c8o8Fe request repeats the exact prompt sent to
-            # StreamGenerate, including the high-resolution/ratio hint.  Using
-            # only the raw user text can make Google return the preview
-            # rendition instead of the full-size master.
-            full_size_url = self._fetch_full_size_url(token, full_prompt, metadata_json)
-            if full_size_url:
-                # c8o8Fe returns the unsigned ``/gg/...`` base URL.  The web
-                # client turns it into the full-size rendition by adding this
-                # exact Google image transform before following the redirect
-                # to ``/rd-gg/...=s0-d-I?alr=yes``.  Bare ``=s0`` is only a
-                # preview in this flow.
-                if "=" not in full_size_url.rsplit("/", 1)[-1]:
-                    full_size_url += "=s0-d-I?alr=yes"
-                elif full_size_url.endswith("=s0"):
-                    full_size_url += "-d-I?alr=yes"
-                download_candidates.append(full_size_url)
-            if source_url not in image_urls:
-                image_urls.insert(0, source_url)
-        for u in image_urls:
-            # Legacy responses with no c8o8Fe token can still expose an
-            # original LH3 master through =s0.
-            hr_u = _high_res_image_url(u)
-            if hr_u not in download_candidates:
-                download_candidates.append(hr_u)
-            if u not in download_candidates:
-                download_candidates.append(u)
-
-        raw_bytes: bytes | None = None
-        last_download_err: Exception | None = None
-        for target_url in download_candidates:
-            try:
-                # Gemini's generated LH3 URL commonly redirects to a signed image
-                # object. Follow that redirect, then validate the final bytes.
-                img_resp = self.session.get(target_url, timeout=GEMINI_DOWNLOAD_TIMEOUT_SECONDS, allow_redirects=True)
-                try:
-                    if img_resp.status_code != 200:
-                        continue
-                    content_length = str(img_resp.headers.get("content-length") or "").strip()
-                    if content_length.isdigit() and int(content_length) > MAX_GEMINI_IMAGE_BYTES:
-                        raise ValueError("Generated image exceeds download limit")
-                    candidate = bytes(img_resp.content or b"")
-                    if len(candidate) > MAX_GEMINI_IMAGE_BYTES:
-                        raise ValueError("Generated image exceeds download limit")
-                    if len(candidate) <= 1024:
-                        raise ValueError("Generated image response is too small")
-                    with Image.open(BytesIO(candidate)) as image:
-                        if image.width * image.height > 40_000_000:
-                            raise ValueError("Generated image exceeds pixel limit")
-                        image.verify()
-                    raw_bytes = candidate
-                    break
-                finally:
-                    img_resp.close()
-            except Exception as exc:
-                last_download_err = exc
-                logger.warning("Failed to download a Gemini image candidate")
-                continue
-
-        if not raw_bytes:
+        if not context:
             raise GeminiWebImageError(
-                "Failed to download a valid generated image",
-                status_code=502,
-                code="image_download_failed",
+                "Gemini 未返回全尺寸图片标识；未返回预览图，请重试。",
+                code="full_size_unavailable",
             )
+        _source_url, token, metadata_json, image_id = context
+        full_size_url = self._fetch_full_size_url(
+            token, full_prompt, metadata_json, image_id=image_id,
+        )
+        if not full_size_url:
+            raise GeminiWebImageError(
+                "Gemini 全尺寸下载 RPC 未返回有效地址；未返回预览图，请重试。",
+                code="full_size_unavailable",
+            )
+        try:
+            raw_bytes = self._download_full_size(full_size_url)
+        except GeminiWebImageError:
+            raise
+        except Exception as exc:
+            raise GeminiWebImageError(
+                "Gemini 全尺寸原图下载失败；未返回预览图，请重试。",
+                code="full_size_download_failed",
+            ) from exc
 
         # Gemini's full-size download is already the original web artifact.
         # Do not remove its watermark or resize/re-encode it locally; those

@@ -63,7 +63,18 @@ docker compose up -d
 {"model":"gemini-image","prompt":"白色背景上的红色圆形","size":"1024x1024","response_format":"b64_json"}
 ```
 
-`gemini-image-2.5-flash`、`gemini-2.0-flash-image`、`imagen-3`、`imagen-3.0-generate-002` 是兼容别名，均调用当前 Gemini 网页会话的默认生图能力，不指定或保证某个上游模型版本。`size` 用于提示宽高比；下载优先取 `=s0` 原图，2K/4K 输出通过本地 Lanczos 缩放，不代表上游原生分辨率。当前仅支持文生图，携带参考图或调用 Gemini 图片编辑会明确报错。
+`gemini-image-2.5-flash`、`gemini-2.0-flash-image`、`imagen-3`、`imagen-3.0-generate-002` 是兼容别名，均调用当前 Gemini 网页会话的默认生图能力，不指定或保证某个上游模型版本。`size` 用于提示宽高比，不保证精确输出尺寸。下载使用网页「下载完整尺寸图片」对应的 `c8o8Fe` RPC，并处理 Google 在 HTTP 200 正文中返回下载 URL 的多段跳转；保留最终图片的原始字节和实际像素，不进行本地超分、去水印或重编码。全尺寸下载失败时明确报错，不再静默返回 1K 预览图。ChatGPT 的本地超分逻辑不受影响。
+
+支持在生图页面上传参考图后编辑，也支持 `/v1/images/edits` 的 multipart 图片、JSON data URL，以及 `/v1/chat/completions` 消息中的参考图。参考图会上传到 Gemini 并作为对话附件发送，不会被忽略。最多 10 张，单张不超过 50MB，支持 JPEG/PNG/WebP/GIF；暂不支持 `mask` 蒙版，请用文字描述编辑区域。例如：
+
+```bash
+curl http://localhost:3000/v1/images/edits \
+  -H "Authorization: Bearer YOUR_AUTH_KEY" \
+  -F model=gemini-image \
+  -F 'prompt=把参考图中的红色圆形改为蓝色，其他元素保持不变' \
+  -F 'image=@reference.png' \
+  -F response_format=b64_json
+```
 
 Gemini 账号不参与 ChatGPT 选号、模型目录查询或 OpenAI Token 刷新。网页额度不可查询，账号页显示「网页额度」；上游限流后暂时冷却，Cookie 失效时需重新导入。服务会保存上游返回的 Cookie 更新，但不能保证会话永久有效。
 

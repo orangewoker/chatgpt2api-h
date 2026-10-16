@@ -231,9 +231,61 @@ def test_gemini_import_and_generation_api(isolated_accounts, monkeypatch, stream
         generate.assert_called_once()
     assert isolated_accounts.get_account(token)["success"] == 1
     assert not isolated_accounts._image_inflight
-    response = client.post("/v1/images/edits", json={"model": "gemini-image", "prompt": "edit", "images": [{"image_url": f"data:image/png;base64,{encoded}"}]})
-    assert response.status_code == 400, response.text
-    assert response.json()["error"]["code"] == "unsupported_operation"
+    with patch.object(GeminiWebImageProvider, "generate", return_value={"data": [{"b64_json": encoded}]}) as generate:
+        response = client.post("/v1/images/edits", json={"model": "gemini-image", "prompt": "edit", "stream": stream, "images": [{"image_url": f"data:image/png;base64,{encoded}"}]})
+        assert response.status_code == 200, response.text
+        assert encoded in response.text
+        assert generate.call_args.kwargs["images"] == [encoded]
+    with patch.object(GeminiWebImageProvider, "generate", return_value={"data": [{"b64_json": encoded}]}) as generate:
+        response = client.post("/v1/images/edits", data={"model": "gemini-image", "prompt": "edit", "stream": str(stream).lower()}, files=[("image", ("reference.png", image.getvalue(), "image/png"))])
+        assert response.status_code == 200, response.text
+        assert encoded in response.text
+        assert generate.call_args.kwargs["images"] == [encoded]
+    assert isolated_accounts.get_account(token)["success"] == 3
+    assert not isolated_accounts._image_inflight
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_gemini_chat_reference_images_and_mask_rejection(isolated_accounts, monkeypatch, stream):
+    import api.ai as ai_api
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from services.log_service import LoggedCall
+
+    monkeypatch.setattr(ai_api, "require_identity", lambda _: {})
+    monkeypatch.setattr(ai_api, "check_request", lambda _: None)
+    monkeypatch.setattr(LoggedCall, "log", lambda *args, **kwargs: None)
+    app = FastAPI()
+    app.include_router(ai_api.create_router())
+    client = TestClient(app)
+    token = "__Secure-1PSID=fixture"
+    isolated_accounts.add_accounts([token])
+    image = io.BytesIO()
+    Image.new("RGB", (64, 64), "red").save(image, "PNG")
+    encoded = base64.b64encode(image.getvalue()).decode()
+    data_url = f"data:image/png;base64,{encoded}"
+    with patch.object(GeminiWebImageProvider, "generate", return_value={"data": [{"b64_json": encoded}]}) as generate:
+        response = client.post("/v1/chat/completions", json={
+            "model": "gemini-image", "stream": stream,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "Combine both reference images"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]}],
+        })
+        assert response.status_code == 200, response.text
+        assert encoded in response.text
+        assert generate.call_args.kwargs["images"] == [encoded, encoded]
+    with patch.object(GeminiWebImageProvider, "generate") as generate:
+        response = client.post("/v1/images/edits", json={
+            "model": "gemini-image", "prompt": "edit", "stream": stream,
+            "images": [{"image_url": data_url}], "mask": data_url,
+        })
+        assert response.status_code == 400, response.text
+        assert "unsupported_operation" in response.text
+        generate.assert_not_called()
+    assert isolated_accounts.get_account(token)["success"] == 1
+    assert not isolated_accounts._image_inflight
 
 
 def test_provider_download_validates_image_and_uses_master_url():
@@ -248,20 +300,20 @@ def test_provider_download_validates_image_and_uses_master_url():
     session.get.return_value.status_code = 200
     session.get.return_value.headers = {"content-length": str(len(raw.getvalue()))}
     session.get.return_value.content = raw.getvalue()
-    result = provider.generate("red square")
-    assert result["data"][0]["b64_json"]
-    assert session.get.call_args.args[0].endswith("=s0")
-    assert session.get.call_args.kwargs["allow_redirects"] is True
+    assert provider._download_full_size("https://lh3.googleusercontent.com/gg/fixture") == raw.getvalue()
+    assert session.get.call_args.args[0].endswith("=d-I?alr=yes")
+    assert session.get.call_args.kwargs["allow_redirects"] is False
     session.get.return_value.close.assert_called_once()
     session.get.return_value.content = b"<html>not an image</html>"
-    with pytest.raises(GeminiWebImageError, match="valid generated image"):
-        provider.generate("red square")
+    with pytest.raises(GeminiWebImageError):
+        provider._download_full_size("https://lh3.googleusercontent.com/gg/fixture")
 
 
 def test_extract_gemini_full_size_context_from_old_stream_shape():
     candidate = ["rc_fixture"] + [None] * 12
     candidate[12] = [None] * 8
     candidate[12][7] = [[[None, None, None, [None, None, None, "https://lh3.googleusercontent.com/gg-dl/preview=s512", None, "download-token"]]]]
+    candidate[12][7][0].append(["http://googleusercontent.com/image_generation_content/1_806", 0])
     inner = [None, ["conversation-id", "response-id"], None, None, [candidate]]
     payload = [["wrb.fr", "StreamGenerate", json.dumps(inner)]]
     context = _extract_gemini_full_size_context(")]}\'\n" + json.dumps(payload))
@@ -269,6 +321,7 @@ def test_extract_gemini_full_size_context_from_old_stream_shape():
         "https://lh3.googleusercontent.com/gg-dl/preview=s512",
         "download-token",
         '["conversation-id", "response-id", "rc_fixture"]',
+        "http://googleusercontent.com/image_generation_content/1_806",
     )
 
 
@@ -279,7 +332,7 @@ def test_fetch_full_size_url_parses_c8o8fe_frame():
     provider._session = session
     session.post.return_value.status_code = 200
     session.post.return_value.text = ")]}'\\n[[[\"wrb.fr\",\"c8o8Fe\",\"[\\\"https://lh3.googleusercontent.com/full=s2048\\\"]\"]]]"
-    assert provider._fetch_full_size_url("download-token", "red square", '["cid", "rid", "rcid"]') == "https://lh3.googleusercontent.com/full=s2048"
+    assert provider._fetch_full_size_url("download-token", "red square", '["cid", "rid", "rcid"]', image_id="http://googleusercontent.com/image_generation_content/1_806") == "https://lh3.googleusercontent.com/full=s2048"
     request = session.post.call_args
     assert request.kwargs["params"]["source-path"] == "/app/cid"
     assert "[23,\\\"red square\\\"]" in request.kwargs["data"]["f.req"]
