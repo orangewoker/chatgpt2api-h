@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.10.1 - 2026-10-20
+
++ [修复] Gemini 单轮直接发送原文，不再显示 Conversation JSON；精确历史匹配时接续原生网页会话，仅发送最新一轮，缓存失效时使用可读角色历史。
++ [修复] 客户端可选工具配置不再阻止 Gemini 识图；明确区分图片输入与 image_generation/modalities 图片输出，强制工具调用仍报错。
++ [新增] Gemini 内联 MP4/WebM 视频附件，支持 Chat Completions 与 Responses；Argon Low 已实测识别视频颜色先后顺序。单文件 20MB，总计 50MB、10 个附件。
++ [边界] 原生 WAV/MP3 音频转写实测未通过，暂明确返回 invalid_media，不静默忽略音频；不代表上游模型本身不具备音频能力。
++ [修复] Chat Completions 与 Responses 使用独立缓存命名空间，避免相同内容返回错误协议格式。
++ [测试] Gemini 对话、多模态与现有图片/文本相关回归共 149 项通过；原生多轮、可选工具配置下识图及视频顺序识别均经 Cookie 直连实测。
+
 ## 1.10.0 - 2026-10-20
 
 + [新增] Gemini Web 对话：3.8 Flash、4.0 Argon 各 low/medium/high 三档模型，动态发现账号可用版本；固定档位不降级、不回退 GPT。

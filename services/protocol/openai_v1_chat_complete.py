@@ -175,7 +175,10 @@ def chat_image_args(body: dict[str, Any]) -> tuple[str, str, int, list[tuple[byt
 
 def text_chat_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     model = str(body.get("model") or "auto").strip() or "auto"
-    messages = normalize_text_messages(normalize_messages(chat_messages_from_body(body)))
+    from services.gemini_chat import is_gemini_chat
+    from services.gemini_media import normalize_gemini_messages
+    normalizer = normalize_gemini_messages if is_gemini_chat(model) else normalize_messages
+    messages = normalize_text_messages(normalizer(chat_messages_from_body(body)))
     if has_unsupported_tools(body, WEB_SEARCH_TOOL_TYPES):
         messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
     return model, messages
@@ -288,7 +291,7 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     from services.gemini_chat import validate_chat_body
-    validate_chat_body(body)
+    body = validate_chat_body(body)
     if body.get("stream"):
         if is_image_chat_request(body):
             return image_chat_events(body)
@@ -296,7 +299,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
         if is_web_search_chat_request(body) and not has_unsupported_tools(body, WEB_SEARCH_TOOL_TYPES):
             return stream_web_search_chat_completion(messages, model)
         thinking_effort = thinking_effort_from_body(body)
-        key = cache_key(body, messages, stream=True)
+        key = "chat:" + cache_key(body, messages, stream=True)
         return chat_completion_cache.get_or_compute_stream(
             key,
             lambda: stream_text_chat_completion(text_backend(model), messages, model, thinking_effort),
@@ -307,7 +310,7 @@ def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     if is_web_search_chat_request(body) and not has_unsupported_tools(body, WEB_SEARCH_TOOL_TYPES):
         return web_search_chat_response(messages, model)
     thinking_effort = thinking_effort_from_body(body)
-    key = cache_key(body, messages, stream=False)
+    key = "chat:" + cache_key(body, messages, stream=False)
     return chat_completion_cache.get_or_compute_response(
         key,
         lambda: completion_response(

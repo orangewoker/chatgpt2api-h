@@ -8,6 +8,7 @@ import hashlib
 import threading
 import time
 from typing import Iterator
+from curl_cffi import CurlMime
 
 from services.image_providers.gemini_web import (
     GEMINI_STREAM_GENERATE_ENDPOINT, GeminiWebImageError, GeminiWebImageProvider,
@@ -19,21 +20,64 @@ CHAT_MODELS = {f"{base}-{effort}" for base in MODEL_BASES for effort in EFFORTS}
 MODEL_HEADER = "x-goog-ext-525001261-jspb"
 _catalog_cache: dict[str, tuple[float, dict]] = {}
 _cooldowns: dict[str, float] = {}
+_conversations: dict[str, tuple[float, list]] = {}
 _lock = threading.RLock()
 
 
-def validate_chat_body(body: dict) -> None:
+def conversation_key(account: dict, model: str, messages: list) -> str:
+    def encode(value):
+        if isinstance(value, (bytes, bytearray)):
+            return {"sha256": hashlib.sha256(value).hexdigest()}
+        raise TypeError("Unsupported conversation value")
+    data = json.dumps([_account_key(account), model, messages], ensure_ascii=False,
+                      sort_keys=True, default=encode).encode()
+    return hashlib.sha256(data).hexdigest()
+
+
+def take_conversation(account: dict, model: str, messages: list) -> list | None:
+    if not messages or messages[-1].get("role") != "user":
+        return None
+    key = conversation_key(account, model, messages[:-1])
+    with _lock:
+        entry = _conversations.pop(key, None)
+    return list(entry[1]) if entry and entry[0] > time.monotonic() else None
+
+
+def remember_conversation(account: dict, model: str, messages: list, text: str, metadata: list) -> None:
+    if len(metadata) < 3 or not all(isinstance(x, str) and x for x in metadata[:3]):
+        return
+    key = conversation_key(account, model, messages + [{"role": "assistant", "content": text}])
+    with _lock:
+        for expired in [k for k, (until, _) in _conversations.items() if until <= time.monotonic()]:
+            _conversations.pop(expired, None)
+        if len(_conversations) >= 256:
+            _conversations.pop(next(iter(_conversations)))
+        _conversations[key] = (time.monotonic() + 1800, list(metadata))
+
+
+def validate_chat_body(body: dict) -> dict:
     """Validate before other providers/tools get a chance to route this request."""
     model = str(body.get("model") or "")
     if not model.startswith(("gemini-3.8-", "gemini-4.0-")):
-        return
+        return body
     from services.protocol.conversation import ImageGenerationError
     def invalid(message):
         raise ImageGenerationError(message, status_code=400, error_type="invalid_request_error", code="invalid_request")
     if not is_gemini_chat(model):
         invalid("Unknown Gemini chat model; choose a low, medium or high model ID")
-    if body.get("tools") or body.get("functions") or "image" in (body.get("modalities") or []):
-        invalid("Gemini chat supports text and image input, not tool calls or image output; use an image model for generation")
+    if "image" in (body.get("modalities") or []):
+        invalid("modalities=image requests image OUTPUT, not vision input. For image understanding use image_url/input_image with modalities omitted or [text]")
+    tools = body.get("tools") or []
+    if any(isinstance(tool, dict) and tool.get("type") == "image_generation" for tool in tools):
+        invalid("image_generation requests image OUTPUT. Remove this tool for vision input, or use an image generation model")
+    if body.get("tools") or body.get("functions"):
+        choice = body.get("tool_choice", "auto")
+        legacy_choice = body.get("function_call", "auto")
+        if choice not in ("auto", "none", None) or legacy_choice not in ("auto", "none", None):
+            invalid("Gemini chat cannot execute required tool/function calls; use tool_choice=none for text or image understanding")
+        body = dict(body)
+        for key in ("tools", "functions", "tool_choice", "function_call"):
+            body.pop(key, None)
     if body.get("previous_response_id"):
         invalid("Gemini chat requires full conversation history in input; previous_response_id is not supported")
     reasoning = body.get("reasoning")
@@ -41,6 +85,7 @@ def validate_chat_body(body: dict) -> None:
               reasoning.get("effort") if isinstance(reasoning, dict) else None]
     if any(value is not None and str(value).strip().lower() != model.rsplit("-", 1)[1] for value in values):
         invalid("Reasoning effort conflicts with the selected Gemini model tier")
+    return body
 
 
 def _account_key(account: dict) -> str:
@@ -88,7 +133,11 @@ def stream_account_chat(model: str, messages: list, effort: str = "") -> Iterato
     from services.account_service import account_service
     from services.protocol.conversation import ImageGenerationError
     last_error = None
-    for account in available_accounts():
+    accounts = available_accounts()
+    if messages and messages[-1].get("role") == "user":
+        with _lock:
+            accounts.sort(key=lambda a: not (conversation_key(a, model, messages[:-1]) in _conversations))
+    for account in accounts:
         key = _account_key(account)
         with _lock:
             if _cooldowns.get(key, 0) > time.monotonic():
@@ -100,9 +149,14 @@ def stream_account_chat(model: str, messages: list, effort: str = "") -> Iterato
                 continue
             with GeminiChatProvider(account["access_token"], account=account) as provider:
                 provider.selected_catalog = catalog
+                provider.conversation_metadata = take_conversation(account, model, messages)
+                response_parts = []
                 for delta in provider.stream_chat(model, messages, effort):
                     emitted = True
+                    response_parts.append(delta)
                     yield delta
+                remember_conversation(account, model, messages, "".join(response_parts),
+                                      getattr(provider, "response_metadata", []))
                 account_service.mark_text_used(provider.token)
             return
         except Exception as exc:
@@ -168,6 +222,31 @@ def model_catalog(body: list) -> dict:
 
 
 class GeminiChatProvider(GeminiWebImageProvider):
+    def _upload_media(self, media: list[tuple]) -> list:
+        if not self._push_id:
+            raise GeminiWebImageError("Gemini file upload session is unavailable", code="media_upload_failed")
+        attachments = []
+        for data, filename, mime in media:
+            multipart = CurlMime()
+            try:
+                multipart.addpart(name="file", content_type=mime, filename=filename, data=data)
+                response = self.session.post(
+                    "https://content-push.googleapis.com/upload",
+                    headers={"X-Tenant-Id": "bard-storage", "Push-ID": self._push_id},
+                    multipart=multipart, timeout=self.timeout, allow_redirects=False,
+                )
+                try:
+                    self.check_status(response.status_code)
+                    file_id = response.text.strip()
+                    if not file_id.startswith("/contrib_service/") or len(file_id) > 4096:
+                        raise GeminiWebImageError("Gemini media upload failed", code="media_upload_failed")
+                    attachments.append([[file_id], filename])
+                finally:
+                    response.close()
+            finally:
+                multipart.close()
+        return attachments
+
     def discover_models(self) -> dict:
         self._ensure_snlm0e()
         response = self.session.post(
@@ -205,10 +284,12 @@ class GeminiChatProvider(GeminiWebImageProvider):
             raise GeminiWebImageError("Selected Gemini model is unavailable to this account",
                                       status_code=400, code="model_not_available")
         model_id, number, capacity, capacity_field = catalog[model]
-        # Web has no independent system/history API: encode supplied history once,
-        # preserving role boundaries and image positions, without replaying requests.
-        history, images = [], []
-        for message in messages:
+        metadata = getattr(self, "conversation_metadata", None)
+        # On an exact history match, continue the original Web conversation and
+        # send only the new turn. Unknown/imported histories use readable text.
+        active_messages = messages[-1:] if metadata else messages
+        history, images, media = [], [], []
+        for message in active_messages:
             parts = message.get("content", [])
             if isinstance(parts, str):
                 parts = [{"type": "text", "text": parts}]
@@ -219,15 +300,32 @@ class GeminiChatProvider(GeminiWebImageProvider):
                 elif part.get("type") == "image":
                     images.append((part["data"], f"image_{len(images)+1}.png", part.get("mime", "image/png")))
                     content.append({"attached_image": len(images)})
+                elif part.get("type") == "media":
+                    filename = f"media_{len(media)+1}." + part["filename"].rsplit(".", 1)[-1]
+                    media.append((part["data"], filename, part["mime"]))
+                    content.append({"attached_file": filename})
             history.append({"role": message.get("role", "user"), "content": content})
-        prompt = ("Continue the following conversation and answer the last user message. "
-                  "Attached images are numbered in order. Conversation JSON:\n" +
-                  json.dumps(history, ensure_ascii=False))
-        attachments = self._upload_images(images) if images else None
+        if len(history) == 1 and history[0]["role"] == "user":
+            # Send ordinary single-turn messages verbatim, as the Web UI does.
+            prompt = "".join(part["text"] for part in history[0]["content"] if "text" in part)
+        else:
+            labels = {"system": "System", "developer": "Developer", "user": "User", "assistant": "Assistant"}
+            turns = []
+            for turn in history:
+                text = "\n".join(part["text"] if "text" in part else
+                                 f"[Image {part['attached_image']}]" if "attached_image" in part else
+                                 f"[File {part['attached_file']}]" for part in turn["content"])
+                turns.append(f"{labels.get(turn['role'], turn['role'])}: {text}")
+            prompt = "\n\n".join(turns) + "\n\nAssistant:"
+        attachments = self._upload_images(images) if images else []
+        if media:
+            attachments.extend(self._upload_media(media))
+        attachments = attachments or None
         payload = [None] * 81
         payload[0] = [prompt, 0, None, attachments, None, None, 0]
         payload[1] = ["en"]
-        payload[2] = ["", "", "", None, None, None, None, None, None, ""]
+        payload[2] = list(metadata) if metadata else ["", "", "", None, None, None, None, None, None, ""]
+        self.response_metadata = list(payload[2])
         for index, value in {6: [1], 7: 1, 10: 1, 11: 0, 17: [[0]], 18: 0,
                              27: 1, 30: [4], 41: [1], 53: 0, 61: [], 68: 2,
                              79: number, 80: EFFORTS[level]}.items():
@@ -268,10 +366,16 @@ class GeminiChatProvider(GeminiWebImageProvider):
                 if len(frame) < 3 or frame[0] != "wrb.fr" or not frame[2]:
                     continue
                 body = json.loads(frame[2])
+                if len(body) > 1 and isinstance(body[1], list):
+                    for index, value in enumerate(body[1][:10]):
+                        if index < len(self.response_metadata) and value is not None:
+                            self.response_metadata[index] = value
                 candidates = body[4] if len(body) > 4 else None
                 if not candidates:
                     continue
                 candidate = candidates[0]
+                if candidate and isinstance(candidate[0], str):
+                    self.response_metadata[2] = candidate[0]
                 current = candidate[1][0] if len(candidate) > 1 and candidate[1] else ""
                 if not isinstance(current, str) or not current:
                     continue

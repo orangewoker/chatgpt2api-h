@@ -43,6 +43,7 @@ TOOL_UNAVAILABLE_SYSTEM_MESSAGE = (
 )
 
 RESPONSE_CONTENT_PART_TYPES = {"text", "input_text", "output_text", "image_url", "input_image", "image"}
+RESPONSE_CONTENT_PART_TYPES |= {"input_audio", "audio_url", "input_video", "video_url", "input_file", "file"}
 
 
 def normalize_thinking_effort(value: object) -> str:
@@ -290,7 +291,10 @@ def response_completed(
 
 def text_response_parts(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
     model = str(body.get("model") or "auto").strip() or "auto"
-    messages = normalize_text_messages(normalize_messages(messages_from_input(body.get("input"), body.get("instructions"))))
+    from services.gemini_chat import is_gemini_chat
+    from services.gemini_media import normalize_gemini_messages
+    normalizer = normalize_gemini_messages if is_gemini_chat(model) else normalize_messages
+    messages = normalize_text_messages(normalizer(messages_from_input(body.get("input"), body.get("instructions"))))
     if has_unsupported_response_tools(body):
         messages.insert(0, {"role": "system", "content": TOOL_UNAVAILABLE_SYSTEM_MESSAGE})
     return model, messages
@@ -416,7 +420,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         if has_web_search_tool(body) and not has_unsupported_response_tools(body):
             yield from stream_web_search_response(body, messages)
             return
-        key = cache_key(body, messages, stream=bool(body.get("stream")))
+        key = "responses:" + cache_key(body, messages, stream=bool(body.get("stream")))
         yield from chat_completion_cache.get_or_compute_stream(
             key,
             lambda: stream_text_response(text_backend(model), body, messages),
@@ -448,7 +452,7 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
     from services.gemini_chat import validate_chat_body
-    validate_chat_body(body)
+    body = validate_chat_body(body)
     events = response_events(body)
     if body.get("stream"):
         return events

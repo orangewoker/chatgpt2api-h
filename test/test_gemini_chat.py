@@ -70,9 +70,49 @@ def test_history_and_images(provider):
     list(provider.stream_chat("gemini-3.8-flash-low", messages))
     payload = json.loads(json.loads(provider.session.post.call_args.kwargs["data"]["f.req"])[1])
     assert "Be brief" in payload[0][0] and "Previous answer" in payload[0][0]
-    assert '"attached_image": 1' in payload[0][0]
+    assert '[Image 1]' in payload[0][0]
     assert payload[0][3] == [[["upload-id"], "image.png"]]
     provider._upload_images.assert_called_once_with([(b"png", "image_1.png", "image/png")])
+
+
+def test_single_turn_is_verbatim(provider):
+    list(provider.stream_chat("gemini-3.8-flash-low", [{"role": "user", "content": "你好"}]))
+    payload = json.loads(json.loads(provider.session.post.call_args.kwargs["data"]["f.req"])[1])
+    assert payload[0][0] == "你好"
+
+
+def test_optional_tools_do_not_select_another_provider():
+    body = {"model": "gemini-4.0-argon-low", "tools": [{"type": "web_search"}], "tool_choice": "auto"}
+    clean = gemini.validate_chat_body(body)
+    assert "tools" not in clean and "tools" in body
+
+
+@pytest.mark.parametrize("choice", ["required", {"type": "function", "function": {"name": "test"}}])
+def test_required_tools_rejected(choice):
+    with pytest.raises(ImageGenerationError, match="required"):
+        gemini.validate_chat_body({"model": "gemini-4.0-argon-low", "tools": [{"type": "function"}], "tool_choice": choice})
+
+
+def test_native_history_only_sends_latest_turn(provider):
+    provider.conversation_metadata = ["c_123", "r_123", "rc_123", None, None, None, None, None, None, ""]
+    list(provider.stream_chat("gemini-3.8-flash-low", [
+        {"role": "user", "content": "Remember 42"}, {"role": "assistant", "content": "OK"},
+        {"role": "user", "content": "What number?"}]))
+    payload = json.loads(json.loads(provider.session.post.call_args.kwargs["data"]["f.req"])[1])
+    assert payload[0][0] == "What number?"
+    assert payload[2][:3] == ["c_123", "r_123", "rc_123"]
+
+
+def test_conversation_scope_and_single_use():
+    account = {"access_token": "test-one"}
+    messages = [{"role": "user", "content": "Hello"}]
+    metadata = ["c_123", "r_123", "rc_123"]
+    gemini.remember_conversation(account, "gemini-3.8-flash-low", messages, "Hi", metadata)
+    followup = messages + [{"role": "assistant", "content": "Hi"}, {"role": "user", "content": "Continue"}]
+    assert gemini.take_conversation({"access_token": "test-two"}, "gemini-3.8-flash-low", followup) is None
+    assert gemini.take_conversation(account, "gemini-4.0-argon-low", followup) is None
+    assert gemini.take_conversation(account, "gemini-3.8-flash-low", followup) == metadata
+    assert gemini.take_conversation(account, "gemini-3.8-flash-low", followup) is None
 
 
 @pytest.mark.parametrize("status", [401, 403, 429, 500])
