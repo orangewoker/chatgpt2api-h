@@ -447,6 +447,8 @@ def response_events(body: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    from services.gemini_chat import validate_chat_body
+    validate_chat_body(body)
     events = response_events(body)
     if body.get("stream"):
         return events

@@ -728,11 +728,19 @@ def conversation_events(
     yield from iter_conversation_payloads(payloads, history_text, history_messages)
 
 
-def text_backend(model: str = "auto") -> OpenAIBackendAPI:
+def text_backend(model: str = "auto") -> OpenAIBackendAPI | None:
+    from services.gemini_chat import is_gemini_chat
+    if is_gemini_chat(model):
+        # Gemini selection is provider-specific and never borrows GPT tokens.
+        return None
     return OpenAIBackendAPI(access_token=account_service.get_text_access_token(model=model))
 
 
-def stream_text_deltas(backend: OpenAIBackendAPI, request: ConversationRequest) -> Iterator[str]:
+def stream_text_deltas(backend: OpenAIBackendAPI | None, request: ConversationRequest) -> Iterator[str]:
+    from services.gemini_chat import is_gemini_chat, stream_account_chat
+    if is_gemini_chat(request.model):
+        yield from stream_account_chat(request.model, request.messages, request.thinking_effort)
+        return
     attempted_tokens: set[str] = set()
     token = getattr(backend, "access_token", "")
     emitted = False

@@ -287,6 +287,8 @@ def stream_image_chat_completion(image_outputs: Iterable[ImageOutput], model: st
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    from services.gemini_chat import validate_chat_body
+    validate_chat_body(body)
     if body.get("stream"):
         if is_image_chat_request(body):
             return image_chat_events(body)

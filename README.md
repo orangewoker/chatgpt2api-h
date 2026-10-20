@@ -31,6 +31,10 @@
 
 ## 快速开始
 
+### Gemini 网页对话
+
+新增 Gemini **3.8 Flash / 4.0 Argon** 的低、中、高六个独立对话模型，支持文本、图片理解与流式输出，兼容 `/v1/chat/completions` 和 `/v1/responses`。详见 [Gemini 对话接入说明](docs/gemini-chat.md)。原有 Gemini 生图/全尺寸下载不受影响。
+
 ### Docker 运行
 
 ```bash

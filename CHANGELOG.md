@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.10.0 - 2026-10-20
+
++ [新增] Gemini Web 对话：3.8 Flash、4.0 Argon 各 low/medium/high 三档模型，动态发现账号可用版本；固定档位不降级、不回退 GPT。
++ [新增] `/v1/chat/completions` 与 `/v1/responses` 支持 Gemini 文本、多轮历史、图片附件看图问答及流式/非流式输出；与生图路由隔离。
++ [调整] Gemini 对话使用独立文本选号，不占图片槽位；不支持的工具、图片输出、previous_response_id 和档位冲突明确报错。
++ [验证] Cookie 直连实测六档均返回回答；Flash High / Argon Low 真实看图正确识别红色方形。HTTP/SSE 封装采用独立 mock 回归，详情见 `docs/gemini-chat.md`。
++ [测试] Gemini 对话新增 31 项测试；与生图、全尺寸下载、图片编辑、文本路由及缓存等相关回归共 128 项通过。
+
 ## 1.9.9 - 2026-10-16
 
 + [修复] Gemini 全尺寸 RPC 使用生成响应中的真实 `image_generation_content` ID，不再伪造图片 ID；兼容网页的带负号会话标识。

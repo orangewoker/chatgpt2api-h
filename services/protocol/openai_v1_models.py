@@ -41,6 +41,8 @@ def list_models() -> dict[str, Any]:
         dynamic_models.update(WEB_IMAGE_MODELS)
     if any(str(account.get("provider") or "").lower() == "gemini" for account in active_accounts):
         dynamic_models.update(GEMINI_IMAGE_MODELS)
+        from services.gemini_chat import available_chat_models
+        dynamic_models.update(available_chat_models())
     if codex_types & {"Plus", "Team", "Pro"}:
         dynamic_models.add(CODEX_IMAGE_MODEL)
     if "Plus" in codex_types:
