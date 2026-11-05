@@ -20,6 +20,8 @@ from services.image_upscale import upscale_image_bytes
 from utils.helper import (
     IMAGE_MODELS,
     is_gif_bytes,
+    is_svg_bytes,
+    is_web_image_model,
     normalize_image_output,
     extract_image_from_message_content,
     is_codex_image_model,
@@ -221,6 +223,8 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
 
 def build_image_prompt(prompt: str, size: str | None, quality: str = "auto", output_format: str = "png", frame_count=None, frame_duration_ms=None) -> str:
     hints = []
+    if output_format == "svg":
+        hints.append("输出真正可编辑的 SVG 矢量图文件，使用路径、形状与文字，不要嵌入 PNG/JPEG，不要输出位图。")
     if output_format == "gif":
         hints.append(f"输出动画 GIF，{frame_count} 帧，每帧 {frame_duration_ms} 毫秒。")
     if size:
@@ -292,6 +296,8 @@ def format_image_result(
             with Image.open(BytesIO(raw)) as animation:
                 if getattr(animation, "n_frames", 1) < 2:
                     continue
+        if output_format == "svg" and not is_svg_bytes(base64.b64decode(b64_json)):
+            continue
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
         if response_format == "b64_json":
             data.append({
@@ -304,6 +310,8 @@ def format_image_result(
                 "url": save_image_bytes(base64.b64decode(b64_json), base_url),
                 "revised_prompt": revised_prompt,
             })
+    if output_format == "svg" and not data:
+        raise ImageGenerationError("Upstream did not return SVG", code="output_format_mismatch")
     if output_format == "gif" and not data:
         raise ImageGenerationError("Upstream did not return an animated GIF (received static or non-GIF output)", code="output_format_mismatch")
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
@@ -947,6 +955,12 @@ def stream_image_outputs(
     })
     if request.progress_callback:
         request.progress_callback("image_stream_resolve_start")
+    if request.output_format == "svg" and conversation_id and not last.get("blocked"):
+        from services.svg_output import resolve_svg_outputs
+        image_items = resolve_svg_outputs(backend, conversation_id, file_ids, sediment_ids, message, config.image_poll_timeout_secs)
+        data = format_image_result(image_items, request.prompt, request.response_format, request.base_url, output_format="svg")["data"]
+        yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
+        return
     if message and not file_ids and not sediment_ids and last.get("blocked"):
         # 尝试从 /backend-api/tasks/ 获取详细错误信息
         detailed_error = _get_detailed_error_from_tasks(backend, conversation_id)
@@ -1650,6 +1664,10 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
             request.output_format, request.frame_count, request.frame_duration_ms)
     except ValueError as exc:
         raise ImageGenerationError(str(exc), status_code=400, error_type="invalid_request_error", code="invalid_image_output") from exc
+    if request.output_format == "psd":
+        raise ImageGenerationError("PSD requires /v1/images/generations (non-streaming)", status_code=400)
+    if request.output_format == "svg" and (request.images or not is_web_image_model(request.model)):
+        raise ImageGenerationError("SVG requires web image generation without reference images", status_code=400)
     if request.output_format == "gif" and (request.images or is_gemini_image_model(request.model)):
         raise ImageGenerationError("GIF output is not supported for image edits or Gemini", status_code=400)
     if not is_supported_image_model(request.model):

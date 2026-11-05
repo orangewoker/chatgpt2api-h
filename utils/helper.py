@@ -177,10 +177,20 @@ def is_gif_bytes(data: bytes) -> bool:
     return data.startswith((b"GIF87a", b"GIF89a"))
 
 
+def is_svg_bytes(data: bytes) -> bool:
+    import xml.etree.ElementTree as ET
+    if not data.lstrip().startswith(b"<") or b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+        return False
+    try:
+        return ET.fromstring(data).tag in {"svg", "{http://www.w3.org/2000/svg}svg"}
+    except (ET.ParseError, ValueError):
+        return False
+
+
 def normalize_image_output(output_format="png", frame_count=None, frame_duration_ms=None):
     fmt = str(output_format or "png").strip().lower()
-    if fmt not in {"png", "gif"}:
-        raise ValueError("output_format must be png or gif")
+    if fmt not in {"png", "gif", "svg", "psd"}:
+        raise ValueError("output_format must be png, gif, svg or psd")
     if fmt != "gif":
         if frame_count is not None or frame_duration_ms is not None:
             raise ValueError("frame_count and frame_duration_ms require GIF output")

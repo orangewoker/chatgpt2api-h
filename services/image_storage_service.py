@@ -15,11 +15,11 @@ from fastapi import HTTPException
 from PIL import Image
 
 from services.config import DATA_DIR, config
-from utils.helper import is_gif_bytes
+from utils.helper import is_gif_bytes, is_svg_bytes
 
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 
 
 class ImageStorageError(RuntimeError):
@@ -199,7 +199,7 @@ class ImageStorageService:
 
     def make_relative_path(self, image_data: bytes) -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
-        extension = "gif" if is_gif_bytes(image_data) else "png"
+        extension = "svg" if is_svg_bytes(image_data) else ("gif" if is_gif_bytes(image_data) else "png")
         filename = f"{int(time.time())}_{file_hash}.{extension}"
         relative_dir = Path(time.strftime("%Y"), time.strftime("%m"), time.strftime("%d"))
         return f"{relative_dir.as_posix()}/{filename}"
@@ -221,7 +221,7 @@ class ImageStorageService:
             stored_local = True
 
         if mode in {"webdav", "both"}:
-            remote_url = WebDAVClient(self.settings()).put(rel, image_data, content_type="image/gif" if is_gif_bytes(image_data) else "image/png")
+            remote_url = WebDAVClient(self.settings()).put(rel, image_data, content_type="image/svg+xml" if is_svg_bytes(image_data) else ("image/gif" if is_gif_bytes(image_data) else "image/png"))
             stored_webdav = True
 
         dimensions = _image_dimensions(image_data)

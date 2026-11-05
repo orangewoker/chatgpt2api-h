@@ -41,7 +41,7 @@ export type ImageTurn = {
   ratio: string;
   tier: string;
   quality: string;
-  outputFormat?: "png" | "gif";
+  outputFormat?: "png" | "gif" | "svg" | "psd";
   frameCount?: number;
   frameDurationMs?: number;
   images: StoredImage[];
@@ -156,7 +156,7 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     ratio: typeof turn.ratio === "string" && turn.ratio ? turn.ratio : "1:1",
     tier: typeof turn.tier === "string" && turn.tier ? turn.tier : "1k",
     quality: typeof turn.quality === "string" && turn.quality ? turn.quality : "auto",
-    outputFormat: turn.outputFormat === "gif" ? "gif" : undefined,
+    outputFormat: ["png", "gif", "svg", "psd"].includes(turn.outputFormat || "") ? turn.outputFormat : undefined,
     frameCount: Number(turn.frameCount) > 0 ? Number(turn.frameCount) : undefined,
     frameDurationMs: Number(turn.frameDurationMs) > 0 ? Number(turn.frameDurationMs) : undefined,
     images: normalizedImages,

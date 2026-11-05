@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.12.0 - 2026-11-05
+
++ [新增] 生图格式增加 SVG、PSD，历史配置、重试和下载保留格式。
++ [新增] SVG 与 PNG/GIF 共用网页 picture_v2 生图会话，支持资产、附件和 SVG 文本结果提取；保留矢量字节、SVG MIME 和扩展名，跳过位图超分。
++ [新增] PSD 单独复用网页文件生成链路，返回 PSD 下载卡片；支持既有 PSD 接口模型选择及仅 PSD 导出。
++ [修复] SVG 本地/WebDAV 展示、下载及图库缩略图路径适配，浏览响应添加隔离策略；上游返回非 SVG/PSD 时明确报错，不改后缀伪装。
++ [边界] SVG/PSD 暂限网页文生图，不支持参考图编辑、Codex 和 Gemini；PSD 不支持流式。已完成模拟及回归测试，未进行真实上游 SVG/PSD 生成验收。
+
 ## 1.11.0 - 2026-11-05
 
 + [新增] Codex GPT Image 2.6 / Flare / Sunburst 模型及 Plus、Team、Pro 前缀，实际传入 image_generation 工具模型；旧模型保持不变。

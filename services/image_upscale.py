@@ -13,6 +13,7 @@ import re
 from io import BytesIO
 
 from PIL import Image, ImageOps
+from utils.helper import is_svg_bytes
 
 MAX_OUTPUT_DIMENSION = 4096
 MAX_OUTPUT_PIXELS = MAX_OUTPUT_DIMENSION * MAX_OUTPUT_DIMENSION
@@ -46,7 +47,7 @@ def upscale_image_bytes(data: bytes, size: object) -> bytes:
     """
 
     # Never flatten animated GIFs into a single PNG frame.
-    if data.startswith((b"GIF87a", b"GIF89a")):
+    if data.startswith((b"GIF87a", b"GIF89a")) or is_svg_bytes(data):
         return data
     target = _target_size(size)
     if not target or not data:

@@ -13,6 +13,9 @@ from utils.image_tokens import count_image_output_items_tokens, image_usage
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    if str(body.get("output_format") or "png").strip().lower() == "psd":
+        from services.image_file_generation import generate_image_file
+        return generate_image_file(body)
     prompt = str(body.get("prompt") or "")
     model = str(body.get("model") or "gpt-image-2")
     n = int(body.get("n") or 1)

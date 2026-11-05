@@ -105,7 +105,7 @@ const docs: ApiDoc[] = [
       ["n", "number", "可选，生成数量，当前限制 1-4。"],
       ["size", "string", "可选，图片尺寸；支持 3840x2160 / 2160x3840，服务端会自动进行 4K 输出超分。"],
       ["quality", "string", "可选，默认 auto。"],
-      ["output_format", "string", "png 或 gif；编辑与 Gemini 不支持 GIF。"],
+      ["output_format", "string", "png、gif、svg 或 psd；SVG 走网页生图链路，PSD 走网页文件链路（不支持流式）。SVG/PSD 仅支持网页文生图；编辑与 Gemini 不支持 GIF。"],
       ["frame_count", "number", "仅 GIF：2–64，默认 9。"],
       ["frame_duration_ms", "number", "仅 GIF：20–2000，10 的倍数，默认 200。"],
       ["response_format", "string", "可选，默认 b64_json。"],

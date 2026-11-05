@@ -32,6 +32,8 @@ type ImageResultsProps = {
 const b64BlobUrlCache = new Map<string, string>();
 
 function storedImageMime(image: StoredImage) {
+  if (image.url?.toLowerCase().endsWith(".svg")) return "image/svg+xml";
+  if (image.url?.toLowerCase().endsWith(".psd")) return "image/vnd.adobe.photoshop";
   if (image.url?.toLowerCase().endsWith(".gif") || image.b64_json?.startsWith("R0lGOD")) {
     return "image/gif";
   }
@@ -84,7 +86,7 @@ async function downloadStoredImage(image: StoredImage, index: number) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `image-${index + 1}.${storedImageMime(image) === "image/gif" ? "gif" : "png"}`;
+  a.download = `image-${index + 1}.${storedImageMime(image) === "image/svg+xml" ? "svg" : storedImageMime(image) === "image/vnd.adobe.photoshop" ? "psd" : storedImageMime(image) === "image/gif" ? "gif" : "png"}`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -160,7 +162,7 @@ export function ImageResults({
           src: image.dataUrl,
         }));
         const successfulTurnImages = turn.images.flatMap((image) => {
-          const src = image.status === "success" ? getStoredImageSrc(image) : "";
+          const src = image.status === "success" && storedImageMime(image) !== "image/vnd.adobe.photoshop" ? getStoredImageSrc(image) : "";
           return src
             ? [
                 {
@@ -255,6 +257,12 @@ export function ImageResults({
                   <div className="grid grid-cols-3 gap-2 sm:block sm:columns-2 sm:gap-4 sm:space-y-4 xl:columns-3">
                     {turn.images.map((image, index) => {
                       const imageSrc = image.status === "success" ? getStoredImageSrc(image) : "";
+                      if (image.status === "success" && storedImageMime(image) === "image/vnd.adobe.photoshop") {
+                        return <div key={image.id} className="break-inside-avoid rounded-xl border border-stone-200 bg-stone-50 p-6 text-center">
+                          <p className="text-xl font-semibold">PSD</p><p className="my-3 text-xs text-stone-500">Photoshop 文件 · 下载后查看图层</p>
+                          <Button variant="outline" onClick={() => void downloadStoredImage(image, index)}><Download className="size-4" />下载 PSD</Button>
+                        </div>;
+                      }
                       if (image.status === "success" && imageSrc) {
                         const currentIndex = successfulTurnImages.findIndex((item) => item.id === image.id);
                         const sizeLabel = image.b64_json ? formatBase64ImageSize(image.b64_json) : "";
@@ -290,6 +298,7 @@ export function ImageResults({
                                   variant="outline"
                                   size="sm"
                                   className="h-7 w-7 rounded-full border-stone-200 bg-white px-0 text-[10px] text-stone-700 hover:bg-stone-50 sm:h-8 sm:w-fit sm:px-3 sm:text-xs"
+                                  disabled={storedImageMime(image) === "image/svg+xml"}
                                   onClick={() => onContinueEdit(selectedConversation.id, image)}
                                   aria-label="加入编辑"
                                 >

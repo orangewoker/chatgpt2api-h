@@ -472,7 +472,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageWidth, setImageWidth] = useState("1024");
   const [imageHeight, setImageHeight] = useState("1024");
   const [imageQuality, setImageQuality] = useState("auto");
-  const [imageOutputFormat, setImageOutputFormat] = useState<"png" | "gif">("png");
+  const [imageOutputFormat, setImageOutputFormat] = useState<"png" | "gif" | "svg" | "psd">("png");
   const [frameCount, setFrameCount] = useState("9");
   const [frameDurationMs, setFrameDurationMs] = useState("200");
   const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
@@ -1154,7 +1154,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageWidth(parsedSize.width);
     setImageHeight(parsedSize.height);
     setImageQuality(turn.quality);
-    setImageOutputFormat(turn.outputFormat === "gif" ? "gif" : "png");
+    setImageOutputFormat(turn.outputFormat || "png");
     setFrameCount(String(turn.frameCount || 9));
     setFrameDurationMs(String(turn.frameDurationMs || 200));
     setImageModel(turn.model);
@@ -1586,7 +1586,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       ratio: imageRatio,
       tier: imageTier,
       quality: imageQuality,
-      outputFormat: useGif ? "gif" : "png",
+      outputFormat: effectiveImageMode === "generate" && !imageModel.startsWith("gemini-") && !imageModel.startsWith("imagen-") && (!(imageOutputFormat === "svg" || imageOutputFormat === "psd") || !imageModel.includes("codex-")) ? imageOutputFormat : "png",
       frameCount: useGif ? parsedFrameCount : undefined,
       frameDurationMs: useGif ? parsedFrameDuration : undefined,
       images: createLoadingImages(turnId, parsedCount),

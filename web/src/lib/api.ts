@@ -438,7 +438,8 @@ export async function generateImage(
         ...(model ? { model } : {}),
         ...(size ? { size } : {}),
         quality,
-        ...(outputFormat === "gif" ? { output_format: "gif", frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
+        output_format: outputFormat,
+      ...(outputFormat === "gif" ? { frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
         n: 1,
         response_format: "b64_json",
       },
@@ -490,7 +491,8 @@ export async function createImageGenerationTask(
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       quality,
-      ...(outputFormat === "gif" ? { output_format: "gif", frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
+      output_format: outputFormat,
+      ...(outputFormat === "gif" ? { frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
     },
   });
 }

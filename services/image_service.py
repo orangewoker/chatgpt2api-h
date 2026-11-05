@@ -56,9 +56,11 @@ def get_image_response(relative_path: str) -> FileResponse | Response:
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "*",
     }
+    if relative_path.lower().endswith(".svg"):
+        headers.update({"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'", "X-Content-Type-Options": "nosniff"})
     if image_storage_service.has_local(relative_path):
         return FileResponse(_safe_image_path(relative_path), headers=headers)
-    return Response(content=image_storage_service.get_bytes(relative_path), media_type="image/gif" if relative_path.lower().endswith(".gif") else "image/png", headers=headers)
+    return Response(content=image_storage_service.get_bytes(relative_path), media_type="image/svg+xml" if relative_path.lower().endswith(".svg") else ("image/gif" if relative_path.lower().endswith(".gif") else "image/png"), headers=headers)
 
 
 def _thumbnail_path(relative_path: str) -> Path:
@@ -104,7 +106,9 @@ def ensure_thumbnail(relative_path: str) -> Path:
     return target
 
 
-def get_thumbnail_response(relative_path: str) -> FileResponse:
+def get_thumbnail_response(relative_path: str) -> FileResponse | Response:
+    if relative_path.lower().endswith(".svg"):
+        return get_image_response(relative_path)
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -130,7 +134,7 @@ def get_image_download_response(relative_path: str) -> FileResponse:
     }
     return Response(
         content=image_storage_service.get_bytes(rel),
-        media_type="image/png",
+        media_type="image/svg+xml" if rel.lower().endswith(".svg") else ("image/gif" if rel.lower().endswith(".gif") else "image/png"),
         headers=headers,
     )
 

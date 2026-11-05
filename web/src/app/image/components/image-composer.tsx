@@ -18,7 +18,7 @@ type ImageComposerProps = {
   imageWidth: string;
   imageHeight: string;
   imageQuality: string;
-  imageOutputFormat: "png" | "gif";
+  imageOutputFormat: "png" | "gif" | "svg" | "psd";
   frameCount: string;
   frameDurationMs: string;
   imageModel: ImageModel;
@@ -35,7 +35,7 @@ type ImageComposerProps = {
   onImageWidthChange: (value: string) => void;
   onImageHeightChange: (value: string) => void;
   onImageQualityChange: (value: string) => void;
-  onImageOutputFormatChange: (value: "png" | "gif") => void;
+  onImageOutputFormatChange: (value: "png" | "gif" | "svg" | "psd") => void;
   onFrameCountChange: (value: string) => void;
   onFrameDurationMsChange: (value: string) => void;
   onImageModelChange: (value: ImageModel) => void;
@@ -138,8 +138,8 @@ export function ImageComposer({
   const qualityLabel = qualityOptions.find((option) => option.value === imageQuality)?.label || "自动";
   const ratioLabel = imageRatio === "auto" ? "auto" : `${imageRatio}(${imageTier})`;
   const gifDisabled = referenceImages.length > 0 || imageModel.startsWith("gemini-") || imageModel.startsWith("imagen-");
-  const activeFormat = gifDisabled ? "png" : imageOutputFormat;
-  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张${activeFormat === "gif" ? " · GIF" : ""}`;
+  const activeFormat = gifDisabled || (imageModel.includes("codex-") && (imageOutputFormat === "svg" || imageOutputFormat === "psd")) ? "png" : imageOutputFormat;
+  const imageSizeLabel = `${qualityLabel} · ${ratioLabel} · ${imageCount || 1} 张${activeFormat !== "png" ? ` · ${activeFormat.toUpperCase()}` : ""}`;
   const selectedModelLabel = modelOptions.find((option) => option.value === imageModel)?.label || imageModel;
 
   useEffect(() => {
@@ -430,9 +430,9 @@ export function ImageComposer({
                         <div className="mb-3">
                           <div className="mb-2 text-sm font-medium text-stone-900">格式</div>
                           <div className="grid grid-cols-2 gap-2">
-                            {(["png", "gif"] as const).map((format) => {
+                            {(["png", "gif", "svg", "psd"] as const).map((format) => {
                               const active = format === activeFormat;
-                              const disabled = format === "gif" && gifDisabled;
+                              const disabled = format !== "png" && (gifDisabled || ((format === "svg" || format === "psd") && imageModel.includes("codex-")));
                               return (
                                 <button
                                   key={format}
@@ -444,11 +444,12 @@ export function ImageComposer({
                                   )}
                                   onClick={() => onImageOutputFormatChange(format)}
                                 >
-                                  {format === "gif" ? "GIF" : "PNG"}
+                                  {format.toUpperCase()}
                                 </button>
                               );
                             })}
                           </div>
+                          {(activeFormat === "svg" || activeFormat === "psd") && <p className="mt-2 text-xs text-stone-500">SVG 使用网页生图链路；PSD 使用网页文件生成模型并提供下载。暂不支持参考图编辑。</p>}
                           {activeFormat === "gif" ? (
                             <div className="mt-2 grid grid-cols-2 gap-2">
                               <label className="flex items-center gap-2 rounded-lg bg-stone-100 px-3 py-1.5 text-sm text-stone-700">

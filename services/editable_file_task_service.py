@@ -77,8 +77,8 @@ def _public_task(task: dict[str, Any]) -> dict[str, Any]:
         "updated_at": task.get("updated_at"),
         "elapsed_seconds": _elapsed_seconds(task),
     }
-    for key in ("result", "error"):
-        if task.get(key):
+    for key in ("result", "error", "model", "include_zip"):
+        if key in task:
             item[key] = task[key]
     return item
 
@@ -97,8 +97,8 @@ class EditableFileTaskService:
     def submit_ppt(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "") -> dict[str, Any]:
         return self._submit(identity, client_task_id=client_task_id, kind="ppt", prompt=prompt, base64_images=base64_images or [], base_url=base_url)
 
-    def submit_psd(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "") -> dict[str, Any]:
-        return self._submit(identity, client_task_id=client_task_id, kind="psd", prompt=prompt, base64_images=base64_images or [], base_url=base_url)
+    def submit_psd(self, identity: dict[str, object], *, client_task_id: str = "", prompt: str = "", base64_images: list[str] | None = None, base_url: str = "", model: str = EDITABLE_FILE_MODEL, include_zip: bool = True) -> dict[str, Any]:
+        return self._submit(identity, client_task_id=client_task_id, kind="psd", prompt=prompt, base64_images=base64_images or [], base_url=base_url, model=model, include_zip=include_zip)
 
     def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
         owner = _owner_id(identity)
@@ -111,7 +111,7 @@ class EditableFileTaskService:
         items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         return {"items": [_public_task(item) for item in items], "missing_ids": []}
 
-    def _submit(self, identity: dict[str, object], *, client_task_id: str, kind: str, prompt: str, base64_images: list[str], base_url: str) -> dict[str, Any]:
+    def _submit(self, identity: dict[str, object], *, client_task_id: str, kind: str, prompt: str, base64_images: list[str], base_url: str, model: str = EDITABLE_FILE_MODEL, include_zip: bool = True) -> dict[str, Any]:
         task_id = _clean(client_task_id) or new_uuid()
         owner = _owner_id(identity)
         key = _task_key(owner, task_id)
@@ -120,13 +120,13 @@ class EditableFileTaskService:
             if key in self._tasks:
                 return _public_task(self._tasks[key])
             ts = time.time()
-            self._tasks[key] = {"id": task_id, "owner_id": owner, "status": TASK_STATUS_QUEUED, "kind": kind, "model": EDITABLE_FILE_MODEL, "created_at": now, "updated_at": now, "created_ts": ts, "updated_ts": ts}
+            self._tasks[key] = {"id": task_id, "owner_id": owner, "status": TASK_STATUS_QUEUED, "kind": kind, "model": model, "include_zip": include_zip, "created_at": now, "updated_at": now, "created_ts": ts, "updated_ts": ts}
             task = dict(self._tasks[key])
             self._save_locked()
-        threading.Thread(target=self._run_task, args=(key, kind, prompt, base64_images, dict(identity), base_url), name=f"{kind}-file-task-{task_id[:16]}", daemon=True).start()
+        threading.Thread(target=self._run_task, args=(key, kind, prompt, base64_images, dict(identity), base_url, model, include_zip), name=f"{kind}-file-task-{task_id[:16]}", daemon=True).start()
         return _public_task(task)
 
-    def _run_task(self, key: str, kind: str, prompt: str, base64_images: list[str], identity: dict[str, object], base_url: str) -> None:
+    def _run_task(self, key: str, kind: str, prompt: str, base64_images: list[str], identity: dict[str, object], base_url: str, model: str = EDITABLE_FILE_MODEL, include_zip: bool = True) -> None:
         started = time.time()
         token = ""
         account_email = ""
@@ -140,15 +140,17 @@ class EditableFileTaskService:
             account_email = _clean(account.get("email"))
             backend = OpenAIBackendAPI(token)
             output_dir = EDITABLE_FILE_ROOT / kind / key.rsplit(":", 1)[-1]
-            result = backend.export_psd_zip(base64_images, prompt, output_dir) if kind == "psd" else backend.export_ppt_zip(base64_images, prompt, output_dir)
+            result = backend.export_psd_zip(base64_images, prompt, output_dir, model=model, include_zip=include_zip) if kind == "psd" else backend.export_ppt_zip(base64_images, prompt, output_dir)
             account_service.mark_text_used(token)
-            data = {"conversation_id": result.conversation_id, "primary_url": _file_url(result.primary_path, base_url), "zip_url": _file_url(result.zip_path, base_url)}
+            data = {"conversation_id": result.conversation_id, "primary_url": _file_url(result.primary_path, base_url)}
+            if result.zip_path is not None:
+                data["zip_url"] = _file_url(result.zip_path, base_url)
             self._update_task(key, status=TASK_STATUS_SUCCESS, result=data, account_email=account_email, error="", ended_ts=time.time())
-            self._log_call(identity, kind, started, request_text(prompt), account_email=account_email, result=data)
+            self._log_call(identity, kind, started, request_text(prompt), account_email=account_email, result=data, model=model)
         except Exception as exc:
             error = str(exc) or "editable file task failed"
             self._update_task(key, status=TASK_STATUS_ERROR, error=error, account_email=account_email, ended_ts=time.time())
-            self._log_call(identity, kind, started, request_text(prompt), status="failed", error=error, account_email=account_email)
+            self._log_call(identity, kind, started, request_text(prompt), status="failed", error=error, account_email=account_email, model=model)
         finally:
             if backend is not None:
                 backend.close()
@@ -196,8 +198,8 @@ class EditableFileTaskService:
                 "created_ts": float(item.get("created_ts") or 0),
                 "updated_ts": float(item.get("updated_ts") or 0),
             }
-            for field in ("result", "error", "started_ts", "ended_ts"):
-                if item.get(field):
+            for field in ("result", "error", "started_ts", "ended_ts", "model", "include_zip"):
+                if field in item:
                     task[field] = item[field]
             tasks[_task_key(owner, task_id)] = task
         return tasks
@@ -231,13 +233,14 @@ class EditableFileTaskService:
             error: str = "",
             account_email: str = "",
             result: dict[str, str] | None = None,
+            model: str = EDITABLE_FILE_MODEL,
     ) -> None:
         detail = {
             "key_id": identity.get("id"),
             "key_name": identity.get("name"),
             "role": identity.get("role"),
             "endpoint": f"/v1/{kind}/generations",
-            "model": EDITABLE_FILE_MODEL,
+            "model": model,
             "started_at": datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M:%S"),
             "ended_at": _now_iso(),
             "duration_ms": int((time.time() - started) * 1000),

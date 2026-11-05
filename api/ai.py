@@ -70,6 +70,8 @@ class EditableFileTaskRequest(BaseModel):
     prompt: str = ""
     base64_images: list[str] = Field(default_factory=list)
     client_task_id: str | None = None
+    model: str = Field(default="gpt-5-5-thinking", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_.:-]+$")
+    include_zip: bool = True
 
 
 async def filter_or_log(call: LoggedCall, text: str) -> None:
@@ -204,10 +206,15 @@ def create_router() -> APIRouter:
             base_url=resolve_image_base_url(request),
         )
 
+    @router.get("/v1/psd/capabilities")
+    async def psd_capabilities(authorization: str | None = Header(default=None)):
+        require_identity(authorization)
+        return {"version": 2, "model_selection": True, "psd_only": True}
+
     @router.post("/v1/psd/generations")
     async def create_psd_task(body: EditableFileTaskRequest, request: Request, authorization: str | None = Header(default=None)):
         identity = require_identity(authorization)
-        await filter_or_log(LoggedCall(identity, "/v1/psd/generations", "gpt-5-5-thinking", "PSD生成任务", request_text=body.prompt), body.prompt)
+        await filter_or_log(LoggedCall(identity, "/v1/psd/generations", body.model, "PSD生成任务", request_text=body.prompt), body.prompt)
         return await run_in_threadpool(
             editable_file_task_service.submit_psd,
             identity,
@@ -215,6 +222,8 @@ def create_router() -> APIRouter:
             prompt=body.prompt,
             base64_images=body.base64_images,
             base_url=resolve_image_base_url(request),
+            model=body.model,
+            include_zip=body.include_zip,
         )
 
     return router

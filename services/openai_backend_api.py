@@ -147,7 +147,7 @@ class EditableFileArtifact:
 class EditableFileExportResult:
     conversation_id: str
     primary_path: Path
-    zip_path: Path
+    zip_path: Path | None
 
 
 class OpenAIBackendAPI:
@@ -1201,12 +1201,13 @@ class OpenAIBackendAPI:
             output_dir: str | Path = EDITABLE_FILE_PSD_OUTPUT_DIR,
             timeout_secs: float = EDITABLE_FILE_TIMEOUT_SECS,
             poll_interval_secs: float = EDITABLE_FILE_POLL_INTERVAL_SECS,
+            *, model: str = EDITABLE_FILE_MODEL, include_zip: bool = True,
     ) -> EditableFileExportResult:
         if not base64_images:
             raise ValueError("base64_images is empty")
         return self._export_editable_file_zip(
             base64_images,
-            self._editable_prompt(EDITABLE_FILE_PSD_PROMPT, prompt),
+            self._editable_prompt(EDITABLE_FILE_PSD_PROMPT if include_zip else "将参考图片按原尺寸和原位置拆分为独立、真正透明的图层，保留背景与文字，制作一个可编辑的 PSD 文件。只输出 PSD 下载链接，不生成 ZIP、JSX 或素材包。", prompt),
             output_dir,
             primary_label="psd",
             primary_suffixes=(".psd",),
@@ -1216,6 +1217,7 @@ class OpenAIBackendAPI:
             export_file_re=EDITABLE_PSD_EXPORT_FILE_RE,
             timeout_secs=timeout_secs,
             poll_interval_secs=poll_interval_secs,
+            model=model, include_zip=include_zip,
         )
 
     def _export_editable_file_zip(
@@ -1232,6 +1234,8 @@ class OpenAIBackendAPI:
             export_file_re: re.Pattern[str],
             timeout_secs: float,
             poll_interval_secs: float,
+            model: str = EDITABLE_FILE_MODEL,
+            include_zip: bool = True,
     ) -> EditableFileExportResult:
         if not self.access_token:
             raise RuntimeError("access_token is required for editable file export")
@@ -1242,8 +1246,8 @@ class OpenAIBackendAPI:
         output_path = Path(output_dir).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         uploaded = [self._upload_editable_base64_image(item, index) for index, item in enumerate(base64_images, start=1)]
-        conduit_token = self._prepare_editable_conversation(prompt, [item["mime_type"] for item in uploaded])
-        conversation_id = self._run_editable_conversation(prompt, uploaded, conduit_token)
+        conduit_token = self._prepare_editable_conversation(prompt, [item["mime_type"] for item in uploaded], model=model)
+        conversation_id = self._run_editable_conversation(prompt, uploaded, conduit_token, model=model)
         artifacts = self._wait_editable_output_artifacts(
             conversation_id,
             primary_label,
@@ -1253,6 +1257,7 @@ class OpenAIBackendAPI:
             export_file_re,
             timeout_secs,
             poll_interval_secs,
+            include_zip=include_zip,
         )
         downloaded = [self._download_editable_artifact(
             conversation_id,
@@ -1264,7 +1269,7 @@ class OpenAIBackendAPI:
         ) for item in artifacts]
         primary_path = next((item for item in downloaded if item.suffix.lower() in primary_suffixes), None)
         zip_path = next((item for item in downloaded if item.suffix.lower() == ".zip"), None)
-        if not primary_path or not zip_path:
+        if not primary_path or (include_zip and not zip_path):
             raise RuntimeError(f"download finished but did not get both {primary_label} and zip files: {downloaded}")
         return EditableFileExportResult(conversation_id=conversation_id, primary_path=primary_path, zip_path=zip_path)
 
@@ -1343,13 +1348,13 @@ class OpenAIBackendAPI:
         extension = mimetypes.guess_extension(mime_type) or ".png"
         return data, f"image_{index}{extension}", mime_type, width, height
 
-    def _prepare_editable_conversation(self, prompt: str, attachment_mime_types: list[str]) -> str:
+    def _prepare_editable_conversation(self, prompt: str, attachment_mime_types: list[str], model: str = EDITABLE_FILE_MODEL) -> str:
         path = "/backend-api/f/conversation/prepare"
         payload: Dict[str, Any] = {
             "action": "next",
             "fork_from_shared_post": False,
             "parent_message_id": "client-created-root",
-            "model": EDITABLE_FILE_MODEL,
+            "model": model,
             "client_prepare_state": "success",
             "timezone_offset_min": -480,
             "timezone": "Asia/Shanghai",
@@ -1375,7 +1380,7 @@ class OpenAIBackendAPI:
             raise RuntimeError(f"missing conduit_token: {response.text}")
         return conduit_token
 
-    def _run_editable_conversation(self, prompt: str, uploaded: list[Dict[str, Any]], conduit_token: str) -> str:
+    def _run_editable_conversation(self, prompt: str, uploaded: list[Dict[str, Any]], conduit_token: str, model: str = EDITABLE_FILE_MODEL) -> str:
         self._bootstrap()
         requirements = self._get_chat_requirements()
         message: Dict[str, Any] = {"id": new_uuid(), "author": {"role": "user"}, "create_time": time.time()}
@@ -1417,7 +1422,7 @@ class OpenAIBackendAPI:
                 "action": "next",
                 "messages": [message],
                 "parent_message_id": "client-created-root",
-                "model": EDITABLE_FILE_MODEL,
+                "model": model,
                 "client_prepare_state": "sent",
                 "timezone_offset_min": -480,
                 "timezone": "Asia/Shanghai",
@@ -1440,7 +1445,7 @@ class OpenAIBackendAPI:
                 "force_parallel_switch": "auto",
                 "thinking_effort": EDITABLE_FILE_THINKING_EFFORT,
             },
-            timeout=300,
+            timeout=(60, 1800),
             stream=True,
         )
         ensure_ok(response, path)
@@ -1466,6 +1471,7 @@ class OpenAIBackendAPI:
             export_file_re: re.Pattern[str],
             timeout_secs: float,
             poll_interval_secs: float,
+            include_zip: bool = True,
     ) -> list[EditableFileArtifact]:
         deadline = time.time() + timeout_secs
         while time.time() < deadline:
@@ -1482,6 +1488,10 @@ class OpenAIBackendAPI:
                 primary_mime_types,
                 primary_mime_keywords,
             )
+            if not include_zip:
+                primary = [item for item in self._extract_editable_artifacts(conversation, export_file_re) if self._looks_like_editable_primary(item, primary_suffixes, primary_mime_types, primary_mime_keywords)]
+                if primary:
+                    return [primary[-1]]
             if targeted:
                 return targeted
             time.sleep(poll_interval_secs)
