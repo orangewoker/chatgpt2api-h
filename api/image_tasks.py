@@ -17,6 +17,9 @@ class ImageGenerationTaskRequest(BaseModel):
     model: str = "gpt-image-2"
     size: str | None = None
     quality: str = "auto"
+    output_format: str = "png"
+    frame_count: int | None = None
+    frame_duration_ms: int | None = None
 
 
 class ResumePollRequest(BaseModel):
@@ -63,6 +66,9 @@ def create_router() -> APIRouter:
                 model=body.model,
                 size=body.size,
                 quality=body.quality,
+                output_format=body.output_format,
+                frame_count=body.frame_count,
+                frame_duration_ms=body.frame_duration_ms,
                 base_url=resolve_image_base_url(request),
             )
         except ValueError as exc:
@@ -75,6 +81,8 @@ def create_router() -> APIRouter:
     ):
         identity = require_identity(authorization)
         payload, image_sources, mask_sources = await parse_image_edit_request(request)
+        if payload.get("output_format", "png").lower() != "png":
+            raise HTTPException(status_code=400, detail={"error": "Image edits only support PNG output"})
         client_task_id = str(payload.get("client_task_id") or "").strip()
         if not client_task_id:
             raise HTTPException(status_code=400, detail={"error": "client_task_id is required"})

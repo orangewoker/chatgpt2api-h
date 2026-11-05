@@ -45,6 +45,9 @@ def upscale_image_bytes(data: bytes, size: object) -> bytes:
     return them as ``b64_json`` regardless of the upstream image format.
     """
 
+    # Never flatten animated GIFs into a single PNG frame.
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return data
     target = _target_size(size)
     if not target or not data:
         return data

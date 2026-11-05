@@ -4,7 +4,7 @@ from typing import Any
 
 from services.account_service import account_service
 from services.model_service import model_catalog_service
-from utils.helper import CODEX_IMAGE_MODEL, GEMINI_IMAGE_MODELS, WEB_IMAGE_MODELS
+from utils.helper import CODEX_IMAGE_MODELS, GEMINI_IMAGE_MODELS, WEB_IMAGE_MODELS
 
 
 def list_models() -> dict[str, Any]:
@@ -44,13 +44,13 @@ def list_models() -> dict[str, Any]:
         from services.gemini_chat import available_chat_models
         dynamic_models.update(available_chat_models())
     if codex_types & {"Plus", "Team", "Pro"}:
-        dynamic_models.add(CODEX_IMAGE_MODEL)
+        dynamic_models.update(CODEX_IMAGE_MODELS)
     if "Plus" in codex_types:
-        dynamic_models.add(f"plus-{CODEX_IMAGE_MODEL}")
+        dynamic_models.update(f"plus-{model}" for model in CODEX_IMAGE_MODELS)
     if "Team" in codex_types:
-        dynamic_models.add(f"team-{CODEX_IMAGE_MODEL}")
+        dynamic_models.update(f"team-{model}" for model in CODEX_IMAGE_MODELS)
     if "Pro" in codex_types:
-        dynamic_models.add(f"pro-{CODEX_IMAGE_MODEL}")
+        dynamic_models.update(f"pro-{model}" for model in CODEX_IMAGE_MODELS)
 
     for model in sorted(dynamic_models):
         if model not in seen:

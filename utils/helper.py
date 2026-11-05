@@ -14,27 +14,37 @@ from fastapi import HTTPException
 from services.proxy_service import proxy_settings
 from utils.log import logger
 
-# Keep the public aliases separate from the Codex-only model.  GPT Image 2.5
-# has two official API variants (Sunburst and Flare); the short alias is kept
-# for clients that only expose a single image-model selector.
+# Public Web compatibility aliases, not upstream model selectors. Actual Web
+# image routing uses config.default_upstream_model_name; keep Codex separate.
 WEB_IMAGE_MODELS = {
     "gpt-image-2",
     "gpt-image-2.5",
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-flare",
+    "gpt-image-2.6",
+    "gpt-image-2.6-sunburst",
+    "gpt-image-2.6-flare",
 }
 WEB_IMAGE_MODEL_SNAPSHOT_RE = re.compile(
-    r"^gpt-image-2\.5-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
+    r"^gpt-image-2\.(?:5|6)-(?:sunburst|flare)-\d{4}-\d{2}-\d{2}$"
 )
 GEMINI_IMAGE_MODEL = "gemini-image"
 # Compatibility aliases route to the default Gemini Web session model.
 GEMINI_IMAGE_MODELS = {GEMINI_IMAGE_MODEL, "imagen-3", "imagen-3.0-generate-002", "gemini-2.0-flash-image", "gemini-image-2.5-flash"}
-BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | {"codex-gpt-image-2"} | GEMINI_IMAGE_MODELS
+CODEX_TOOL_MODELS = {
+    "codex-gpt-image-2": "gpt-image-2",
+    "codex-gpt-image-2.6": "gpt-image-2.6-flare",
+    "codex-gpt-image-2.6-flare": "gpt-image-2.6-flare",
+    "codex-gpt-image-2.6-sunburst": "gpt-image-2.6-sunburst",
+}
+CODEX_IMAGE_MODELS = set(CODEX_TOOL_MODELS)
+BASE_IMAGE_MODELS = WEB_IMAGE_MODELS | CODEX_IMAGE_MODELS | GEMINI_IMAGE_MODELS
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
 PREFIXED_CODEX_IMAGE_MODELS = {
-    f"{plan_type}-{CODEX_IMAGE_MODEL}"
+    f"{plan_type}-{model}"
     for plan_type in IMAGE_MODEL_PLAN_TYPES
+    for model in CODEX_IMAGE_MODELS
 }
 IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
 PUBLIC_IMAGE_MODELS = BASE_IMAGE_MODELS | PREFIXED_CODEX_IMAGE_MODELS
@@ -131,7 +141,7 @@ def split_image_model(model: object) -> tuple[str | None, str | None]:
         prefix = f"{plan_type}-"
         if normalized.startswith(prefix):
             base_model = normalized[len(prefix):]
-            if base_model == CODEX_IMAGE_MODEL:
+            if base_model in CODEX_IMAGE_MODELS:
                 return plan_type, base_model
     return None, None
 
@@ -153,7 +163,42 @@ def is_web_image_model(model: object) -> bool:
 
 def is_codex_image_model(model: object) -> bool:
     _, base_model = split_image_model(model)
-    return base_model == CODEX_IMAGE_MODEL
+    return base_model in CODEX_IMAGE_MODELS
+
+
+def codex_tool_model(model: object) -> str:
+    _, base_model = split_image_model(model)
+    if base_model not in CODEX_TOOL_MODELS:
+        raise ValueError("unsupported Codex image model")
+    return CODEX_TOOL_MODELS[base_model]
+
+
+def is_gif_bytes(data: bytes) -> bool:
+    return data.startswith((b"GIF87a", b"GIF89a"))
+
+
+def normalize_image_output(output_format="png", frame_count=None, frame_duration_ms=None):
+    fmt = str(output_format or "png").strip().lower()
+    if fmt not in {"png", "gif"}:
+        raise ValueError("output_format must be png or gif")
+    if fmt != "gif":
+        if frame_count is not None or frame_duration_ms is not None:
+            raise ValueError("frame_count and frame_duration_ms require GIF output")
+        return fmt, None, None
+    def integer(value, default, low, high, name):
+        if value is None:
+            return default
+        if isinstance(value, bool) or not str(value).isdigit():
+            raise ValueError(f"{name} must be an integer")
+        value = int(value)
+        if not low <= value <= high:
+            raise ValueError(f"{name} must be between {low} and {high}")
+        return value
+    count = integer(frame_count, 9, 2, 64, "frame_count")
+    duration = integer(frame_duration_ms, 200, 20, 2000, "frame_duration_ms")
+    if duration % 10:
+        raise ValueError("frame_duration_ms must be a multiple of 10")
+    return fmt, count, duration
 
 
 def is_image_chat_request(body: dict[str, object]) -> bool:

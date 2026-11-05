@@ -105,6 +105,9 @@ const docs: ApiDoc[] = [
       ["n", "number", "可选，生成数量，当前限制 1-4。"],
       ["size", "string", "可选，图片尺寸；支持 3840x2160 / 2160x3840，服务端会自动进行 4K 输出超分。"],
       ["quality", "string", "可选，默认 auto。"],
+      ["output_format", "string", "png 或 gif；编辑与 Gemini 不支持 GIF。"],
+      ["frame_count", "number", "仅 GIF：2–64，默认 9。"],
+      ["frame_duration_ms", "number", "仅 GIF：20–2000，10 的倍数，默认 200。"],
       ["response_format", "string", "可选，默认 b64_json。"],
     ],
     output: [
@@ -215,7 +218,7 @@ const docs: ApiDoc[] = [
   },
 ];
 
-const usableModels = ["gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "codex-gpt-image-2", "auto", "gpt-5", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini", "gpt-5-mini"];
+const usableModels = ["gpt-image-2", "gpt-image-2.5", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.6", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "codex-gpt-image-2", "codex-gpt-image-2.6", "codex-gpt-image-2.6-flare", "codex-gpt-image-2.6-sunburst", "auto", "gpt-5", "gpt-5-1", "gpt-5-2", "gpt-5-3", "gpt-5-3-mini", "gpt-5-mini"];
 
 function ParamTable({ rows }: { rows: ParamRow[] }) {
   return (

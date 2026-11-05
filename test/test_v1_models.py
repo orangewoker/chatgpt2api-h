@@ -16,6 +16,9 @@ WEB_IMAGE_MODEL_IDS = {
     "gpt-image-2.5",
     "gpt-image-2.5-sunburst",
     "gpt-image-2.5-flare",
+    "gpt-image-2.6",
+    "gpt-image-2.6-sunburst",
+    "gpt-image-2.6-flare",
 }
 
 
@@ -45,6 +48,7 @@ class ModelListTests(unittest.TestCase):
         self.assertIn("gpt-image-2.5", ids)
         self.assertIn("gpt-image-2.5-sunburst", ids)
         self.assertIn("gpt-image-2.5-flare", ids)
+        self.assertTrue(WEB_IMAGE_MODEL_IDS.issubset(ids))
         self.assertIn("codex-gpt-image-2", ids)
         self.assertIn("team-codex-gpt-image-2", ids)
         self.assertNotIn("plus-codex-gpt-image-2", ids)
@@ -92,6 +96,7 @@ class ModelListTests(unittest.TestCase):
         self.assertIn("gpt-image-2.5", ids)
         self.assertIn("gpt-image-2.5-sunburst", ids)
         self.assertIn("gpt-image-2.5-flare", ids)
+        self.assertTrue(WEB_IMAGE_MODEL_IDS.issubset(ids))
         self.assertNotIn("codex-gpt-image-2", ids)
         self.assertNotIn("plus-codex-gpt-image-2", ids)
 

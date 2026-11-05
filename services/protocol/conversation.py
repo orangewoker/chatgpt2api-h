@@ -19,6 +19,8 @@ from services.openai_backend_api import ImageContentPolicyError, ImagePollTimeou
 from services.image_upscale import upscale_image_bytes
 from utils.helper import (
     IMAGE_MODELS,
+    is_gif_bytes,
+    normalize_image_output,
     extract_image_from_message_content,
     is_codex_image_model,
     is_gemini_image_model,
@@ -217,8 +219,10 @@ def assistant_history_messages(messages: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("content") or "") for item in messages if item.get("role") == "assistant" and item.get("content")]
 
 
-def build_image_prompt(prompt: str, size: str | None, quality: str = "auto") -> str:
+def build_image_prompt(prompt: str, size: str | None, quality: str = "auto", output_format: str = "png", frame_count=None, frame_duration_ms=None) -> str:
     hints = []
+    if output_format == "gif":
+        hints.append(f"输出动画 GIF，{frame_count} 帧，每帧 {frame_duration_ms} 毫秒。")
     if size:
         hints.append(f"输出图片尺寸为 {size}。")
     if quality:
@@ -272,12 +276,22 @@ def format_image_result(
     base_url: str | None = None,
     created: int | None = None,
     message: str = "",
+    output_format: str = "png",
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for item in items:
         b64_json = str(item.get("b64_json") or "").strip()
         if not b64_json:
             continue
+        if output_format == "gif":
+            raw = base64.b64decode(b64_json)
+            from io import BytesIO
+            from PIL import Image
+            if not is_gif_bytes(raw):
+                continue
+            with Image.open(BytesIO(raw)) as animation:
+                if getattr(animation, "n_frames", 1) < 2:
+                    continue
         revised_prompt = str(item.get("revised_prompt") or prompt).strip() or prompt
         if response_format == "b64_json":
             data.append({
@@ -290,6 +304,8 @@ def format_image_result(
                 "url": save_image_bytes(base64.b64decode(b64_json), base_url),
                 "revised_prompt": revised_prompt,
             })
+    if output_format == "gif" and not data:
+        raise ImageGenerationError("Upstream did not return an animated GIF (received static or non-GIF output)", code="output_format_mismatch")
     result: dict[str, Any] = {"created": created or int(time.time()), "data": data}
     if message and not data:
         result["message"] = message
@@ -318,6 +334,9 @@ class ConversationRequest:
     n: int = 1
     size: str | None = None
     quality: str = "auto"
+    output_format: str = "png"
+    frame_count: int | None = None
+    frame_duration_ms: int | None = None
     response_format: str = "b64_json"
     base_url: str | None = None
     message_as_error: bool = False
@@ -704,6 +723,9 @@ def conversation_events(
     size: str | None = None,
     quality: str = "auto",
     thinking_effort: str = "",
+    output_format: str = "png",
+    frame_count=None,
+    frame_duration_ms=None,
 ) -> Iterator[dict[str, Any]]:
     normalized = normalize_messages(messages or ([{"role": "user", "content": prompt}] if prompt else []))
     image_model = is_supported_image_model(model)
@@ -716,7 +738,7 @@ def conversation_events(
         )
     history_text = "" if image_model else assistant_history_text(normalized)
     history_messages = [] if image_model else assistant_history_messages(normalized)
-    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, quality)) if image_model else prompt
+    final_prompt = prompt_with_global_system(build_image_prompt(prompt, size, quality, output_format, frame_count, frame_duration_ms)) if image_model else prompt
     payloads = backend.stream_conversation(
         messages=normalized,
         model=upstream_model,
@@ -883,6 +905,9 @@ def stream_image_outputs(
             images=request.images or [],
             size=request.size,
             quality=request.quality,
+            output_format=request.output_format,
+            frame_count=request.frame_count,
+            frame_duration_ms=request.frame_duration_ms,
     ):
         last = event
         if event.get("type") == "conversation.delta":
@@ -1042,6 +1067,7 @@ def stream_image_outputs(
             request.response_format,
             request.base_url,
             int(time.time()),
+            output_format=request.output_format,
         )["data"]
         if data:
             yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1136,6 +1162,7 @@ def stream_image_outputs(
                         request.response_format,
                         request.base_url,
                         int(time.time()),
+                        output_format=request.output_format,
                     )["data"]
                     if data:
                         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1245,6 +1272,7 @@ def stream_image_outputs(
                     request.response_format,
                     request.base_url,
                     int(time.time()),
+                    output_format=request.output_format,
                 )["data"]
                 if data:
                     yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data, conversation_id=conversation_id)
@@ -1296,6 +1324,10 @@ def stream_codex_image_outputs(
         images=request.images or [],
         size=request.size,
         quality=request.quality,
+        model=request.model,
+        output_format=request.output_format,
+        frame_count=request.frame_count,
+        frame_duration_ms=request.frame_duration_ms,
     )))
     if not images:
         raise ImageGenerationError("No image result found in response")
@@ -1313,6 +1345,7 @@ def stream_codex_image_outputs(
         request.response_format,
         request.base_url,
         int(time.time()),
+        output_format=request.output_format,
     )["data"]
     if data:
         yield ImageOutput(kind="result", model=request.model, index=index, total=total, data=data)
@@ -1612,6 +1645,13 @@ def _generate_single_image(
 
 def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[ImageOutput]:
     """并行生成多张图片，每张图片使用独立线程和账号，互不阻塞。"""
+    try:
+        request.output_format, request.frame_count, request.frame_duration_ms = normalize_image_output(
+            request.output_format, request.frame_count, request.frame_duration_ms)
+    except ValueError as exc:
+        raise ImageGenerationError(str(exc), status_code=400, error_type="invalid_request_error", code="invalid_image_output") from exc
+    if request.output_format == "gif" and (request.images or is_gemini_image_model(request.model)):
+        raise ImageGenerationError("GIF output is not supported for image edits or Gemini", status_code=400)
     if not is_supported_image_model(request.model):
         raise ImageGenerationError("unsupported image model,supported models: " + ", ".join(sorted(IMAGE_MODELS)))
 

@@ -177,7 +177,7 @@ environment:
 - 兼容 `POST /v1/images/edits` 图片编辑接口
 - 兼容面向图片场景的 `POST /v1/chat/completions`
 - 兼容面向图片场景的 `POST /v1/responses`
-- `GET /v1/models` 返回 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
+- `GET /v1/models` 返回 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2.6`、`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、
   `gpt-5-mini`
 - 支持通过 `n` 返回多张生成结果
 - `size` 支持 `3840x2160` / `2160x3840` 等 4K 尺寸；当上游返回较小图片时，服务端会使用 Lanczos 高质量插值自动放大到目标尺寸
@@ -189,7 +189,7 @@ environment:
 ### 在线画图功能
 
 - 内置在线画图工作台，支持生成、图片编辑与多图组图编辑
-- 支持 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` 模型选择
+- 支持 `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2.6`、`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` 模型选择
 - 编辑模式支持参考图上传
 - 前端支持多图生成交互
 - 本地保存图片会话历史，支持回看、删除和清空
@@ -259,7 +259,7 @@ curl http://localhost:8000/v1/models \
 
 | 字段   | 说明                                                                                                         |
 |:-----|:-----------------------------------------------------------------------------------------------------------|
-| 返回模型 | `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` |
+| 返回模型 | `gpt-image-2`、`gpt-image-2.5`、`gpt-image-2.5-sunburst`、`gpt-image-2.5-flare`、`gpt-image-2.6`、`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare`、`codex-gpt-image-2`、`auto`、`gpt-5`、`gpt-5-1`、`gpt-5-2`、`gpt-5-3`、`gpt-5-3-mini`、`gpt-5-mini` |
 | 接入场景 | 可接入 Cherry Studio、New API 等上游或客户端                                                                          |
 
 <br>
@@ -290,7 +290,7 @@ curl http://localhost:8000/v1/images/generations \
 
 | 字段                | 说明                                                 |
 |:------------------|:---------------------------------------------------|
-| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，推荐使用 `gpt-image-2.5`（或指定 `gpt-image-2.5-sunburst` / `gpt-image-2.5-flare`） |
+| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，支持 `gpt-image-2.6` / `gpt-image-2.6-sunburst` / `gpt-image-2.6-flare` 等网页兼容别名，不保证上游实际版本 |
 | `prompt`          | 图片生成提示词                                            |
 | `n`               | 生成数量，当前后端限制为 `1-4`                                 |
 | `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                       |
@@ -436,3 +436,34 @@ curl http://localhost:8000/v1/responses \
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/chart?repos=basketikun/chatgpt2api&type=date&legend=top-left)](https://www.star-history.com/?repos=basketikun%2Fchatgpt2api&type=date&legend=top-left)
+
+### GPT Image 2.6 与 GIF（v1.11.0）
+
+Codex Plus / Team / Pro 来源账号现在会发布以下模型（以及对应的 `plus-`、`team-`、`pro-` 前缀）：
+
+- `codex-gpt-image-2.6` → 上游工具 `gpt-image-2.6-flare`
+- `codex-gpt-image-2.6-flare` → 上游工具 `gpt-image-2.6-flare`
+- `codex-gpt-image-2.6-sunburst` → 上游工具 `gpt-image-2.6-sunburst`
+- 旧的 `codex-gpt-image-2` 继续使用 `gpt-image-2`，不自动升级或回退。
+
+网页来源的 `gpt-image-2.6` / `gpt-image-2.6-flare` / `gpt-image-2.6-sunburst` 仍是兼容别名，统一使用 `default_upstream_model_name`，不锁定真实生图版本。日期后缀仅兼容解析，不验证真实快照。只有 Codex 来源账号时，请选带 `codex-` 的模型。
+
+`POST /v1/images/generations` 和 `/api/image-tasks/generations` 新增：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `output_format` | `png` | `png` 或 `gif` |
+| `frame_count` | GIF 时为 9 | 2–64 的整数，仅 GIF 可用 |
+| `frame_duration_ms` | GIF 时为 200 | 20–2000 的整数，且为 10 的倍数，仅 GIF 可用 |
+
+```json
+{"model":"codex-gpt-image-2.6-flare","prompt":"A blue ball bouncing, seamless animated loop","n":1,"size":"1024x1024","quality":"low","output_format":"gif","frame_count":9,"frame_duration_ms":200,"response_format":"url"}
+```
+
+`/v1/responses` 的 `image_generation` 工具参数也接受上述 GIF 字段（沿用当前服务的图片模型路由约定）。生图页面的设置面板可选择 PNG/GIF，帧数和时长会随历史保存。GIF 原始字节不参与静态图片超分；本地和 WebDAV 返回正确的 `.gif` 与 MIME。图片编辑、Gemini 暂不支持 GIF。网页 GIF 目前靠提示词请求，若上游返回 PNG 或单帧 GIF，会明确报错，不伪装成动图。
+
+Codex 调用分为主模型与生图工具模型。主模型默认仍为 `gpt-5.5`，可通过环境变量 `CHATGPT2API_CODEX_RESPONSES_MODEL` 指定账号实际支持的模型。若上游拒绝主模型，需要调整该配置，不能据此判断 2.6 工具是否可用。升级不会保证账号新增模型权限；本版本通过本地 mock 回归，真实生图请在部署环境验证。
+
+镜像：`ghcr.io/orangewoker/chatgpt2api:1.11.0`（同时构建 amd64 / arm64）。保留原有数据卷与配置挂载后更新镜像即可。
+
+实现参考 [FatalErrorR/chatgpt2api GIF 后端提交](https://github.com/FatalErrorR/chatgpt2api/commit/b3346c928595eb6e3abc346c6413994d66000005) 和 [GIF 界面提交](https://github.com/FatalErrorR/chatgpt2api/commit/c271f8fbef)。

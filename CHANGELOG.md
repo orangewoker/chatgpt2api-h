@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.11.0 - 2026-11-05
+
++ [新增] Codex GPT Image 2.6 / Flare / Sunburst 模型及 Plus、Team、Pro 前缀，实际传入 image_generation 工具模型；旧模型保持不变。
++ [新增] 文生图 API、Responses 和任务接口支持 GIF 输出、2–64 帧和 20–2000ms 帧时长；生图页提供对应控件，保留历史参数。
++ [修复] GIF 原始字节、WebDAV MIME、存储索引、展示及下载扩展名完整保留，跳过静态超分。请求 GIF 却返回静态图时明确报错。
++ [边界] 网页 GIF 通过提示词请求，网页模型名仍是兼容别名；不保证上游权限或真实版本。图片编辑与 Gemini 暂不支持 GIF。Codex 主模型可通过 CHATGPT2API_CODEX_RESPONSES_MODEL 配置，默认保持 gpt-5.5。
++ [来源] GIF 界面及参数设计参考 FatalErrorR/chatgpt2api 的 b3346c9、c271f8f，针对本项目的 Gemini、超分和任务链路适配。
+
++ [新增] GPT Image 2.6、Sunburst、Flare 网页兼容别名及日期后缀识别；更新动态模型列表和界面文档。沿用网页上游路由，不保证实际 2.6 版本，不改变 Codex 模型，不新增 GIF / SVG 输出。
+
 ## 1.10.1 - 2026-10-20
 
 + [修复] Gemini 单轮直接发送原文，不再显示 Conversation JSON；精确历史匹配时接续原生网页会话，仅发送最新一轮，缓存失效时使用可读角色历史。

@@ -420,7 +420,15 @@ export async function updateAccount(
   });
 }
 
-export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality = "auto") {
+export async function generateImage(
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+  quality = "auto",
+  outputFormat = "png",
+  frameCount?: number,
+  frameDurationMs?: number,
+) {
   return httpRequest<ImageResponse>(
     "/v1/images/generations",
     {
@@ -430,6 +438,7 @@ export async function generateImage(prompt: string, model?: ImageModel, size?: s
         ...(model ? { model } : {}),
         ...(size ? { size } : {}),
         quality,
+        ...(outputFormat === "gif" ? { output_format: "gif", frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
         n: 1,
         response_format: "b64_json",
       },
@@ -463,7 +472,16 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string, quality = "auto") {
+export async function createImageGenerationTask(
+  clientTaskId: string,
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+  quality = "auto",
+  outputFormat = "png",
+  frameCount?: number,
+  frameDurationMs?: number,
+) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
@@ -472,6 +490,7 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
       quality,
+      ...(outputFormat === "gif" ? { output_format: "gif", frame_count: frameCount, frame_duration_ms: frameDurationMs } : {}),
     },
   });
 }

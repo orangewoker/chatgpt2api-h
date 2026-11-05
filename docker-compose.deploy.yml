@@ -2,7 +2,7 @@ name: chatgpt2api
 
 services:
   app:
-    image: ${CHATGPT2API_IMAGE:-ghcr.io/orangewoker/chatgpt2api:1.9.4}
+    image: ${CHATGPT2API_IMAGE:-ghcr.io/orangewoker/chatgpt2api:1.11.0}
     container_name: ${CHATGPT2API_CONTAINER_NAME:-chatgpt2api}
     restart: unless-stopped
     ports:
@@ -11,6 +11,7 @@ services:
       - ${CHATGPT2API_DATA_DIR:-./data}:/app/data
       - ${CHATGPT2API_CONFIG_FILE:-./config.json}:/app/config.json
     environment:
+      CHATGPT2API_CODEX_RESPONSES_MODEL: ${CHATGPT2API_CODEX_RESPONSES_MODEL:-gpt-5.5}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/accounts.db}
       CHATGPT2API_AUTH_KEY: ${CHATGPT2API_AUTH_KEY:-}

@@ -168,8 +168,8 @@ function buildReferenceImageFromResult(image: StoredImage, fileName: string): St
 
   return {
     name: fileName,
-    type: "image/png",
-    dataUrl: `data:image/png;base64,${image.b64_json}`,
+    type: image.b64_json.startsWith("R0lGOD") ? "image/gif" : "image/png",
+    dataUrl: `data:${image.b64_json.startsWith("R0lGOD") ? "image/gif" : "image/png"};base64,${image.b64_json}`,
   };
 }
 
@@ -207,7 +207,7 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
 
 function taskDataToStoredImage(image: StoredImage, task: ImageTask): StoredImage {
   if (task.status === "success") {
-    const first = task.data?.[0];
+    const first = task.data?.find((item) => item.url?.toLowerCase().endsWith(".gif") || item.b64_json?.startsWith("R0lGOD")) || task.data?.[0];
     if (!first?.b64_json && !first?.url) {
       return {
         ...image,
@@ -472,6 +472,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
   const [imageWidth, setImageWidth] = useState("1024");
   const [imageHeight, setImageHeight] = useState("1024");
   const [imageQuality, setImageQuality] = useState("auto");
+  const [imageOutputFormat, setImageOutputFormat] = useState<"png" | "gif">("png");
+  const [frameCount, setFrameCount] = useState("9");
+  const [frameDurationMs, setFrameDurationMs] = useState("200");
   const [imageModel, setImageModel] = useState<ImageModel>("gpt-image-2");
   const [imageModels, setImageModels] = useState<ImageModel[]>(["gpt-image-2"]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -1151,6 +1154,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setImageWidth(parsedSize.width);
     setImageHeight(parsedSize.height);
     setImageQuality(turn.quality);
+    setImageOutputFormat(turn.outputFormat === "gif" ? "gif" : "png");
+    setFrameCount(String(turn.frameCount || 9));
+    setFrameDurationMs(String(turn.frameDurationMs || 200));
     setImageModel(turn.model);
     setReferenceImages(turn.referenceImages);
     setReferenceImageFiles(
@@ -1244,7 +1250,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             const taskId = image.taskId || image.id;
             return activeTurn.mode === "edit"
               ? createImageEditTask(taskId, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality);
+              : createImageGenerationTask(taskId, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality, activeTurn.outputFormat, activeTurn.frameCount, activeTurn.frameDurationMs);
           }),
         );
         await applyTasks(submitted);
@@ -1296,7 +1302,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                 missingImages.map((image) =>
                   activeTurn.mode === "edit"
                     ? createImageEditTask(image.taskId || image.id, referenceFiles, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality)
-                    : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality),
+                    : createImageGenerationTask(image.taskId || image.id, activeTurn.prompt, activeTurn.model, activeTurn.size, activeTurn.quality, activeTurn.outputFormat, activeTurn.frameCount, activeTurn.frameDurationMs),
                 ),
               );
               if (resubmitted.length > 0) {
@@ -1376,6 +1382,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         ratio: sourceTurn.ratio,
         tier: sourceTurn.tier,
         quality: sourceTurn.quality,
+        outputFormat: sourceTurn.outputFormat,
+        frameCount: sourceTurn.frameCount,
+        frameDurationMs: sourceTurn.frameDurationMs,
         images: createLoadingImages(nextTurnId, count),
         createdAt: now,
         status: "queued",
@@ -1555,6 +1564,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     }
 
     const effectiveImageMode: ImageConversationMode = referenceImageFiles.length > 0 ? "edit" : "generate";
+    const useGif = effectiveImageMode === "generate" && imageOutputFormat === "gif" && !imageModel.startsWith("gemini-") && !imageModel.startsWith("imagen-");
+    const parsedFrameCount = Math.min(64, Math.max(2, Math.round(Number(frameCount) || 9)));
+    const parsedFrameDuration = Math.min(2000, Math.max(20, Math.round((Number(frameDurationMs) || 200) / 10) * 10));
 
     const targetConversation = selectedConversationId
       ? conversationsRef.current.find((conversation) => conversation.id === selectedConversationId) ?? null
@@ -1574,6 +1586,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
       ratio: imageRatio,
       tier: imageTier,
       quality: imageQuality,
+      outputFormat: useGif ? "gif" : "png",
+      frameCount: useGif ? parsedFrameCount : undefined,
+      frameDurationMs: useGif ? parsedFrameDuration : undefined,
       images: createLoadingImages(turnId, parsedCount),
       createdAt: now,
       status: "queued",
@@ -1730,6 +1745,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             imageWidth={imageWidth}
             imageHeight={imageHeight}
             imageQuality={imageQuality}
+            imageOutputFormat={imageOutputFormat}
+            frameCount={frameCount}
+            frameDurationMs={frameDurationMs}
             imageModel={imageModel}
             imageModels={imageModels}
             availableQuota={imageModel.startsWith("gemini-") || imageModel.startsWith("imagen-") ? "由 Gemini 网页决定" : availableQuota}
@@ -1744,6 +1762,9 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
             onImageWidthChange={setImageWidth}
             onImageHeightChange={setImageHeight}
             onImageQualityChange={setImageQuality}
+            onImageOutputFormatChange={setImageOutputFormat}
+            onFrameCountChange={setFrameCount}
+            onFrameDurationMsChange={setFrameDurationMs}
             onImageModelChange={setImageModel}
             onSubmit={handleSubmit}
             onPickReferenceImage={() => fileInputRef.current?.click()}

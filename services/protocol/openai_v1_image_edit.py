@@ -50,6 +50,8 @@ def _composite_mask(
 
 
 def handle(body: dict[str, Any]) -> dict[str, Any] | Iterator[dict[str, Any]]:
+    if str(body.get("output_format") or "png").lower() != "png":
+        raise ImageGenerationError("Image edits only support PNG output", status_code=400)
     prompt = str(body.get("prompt") or "")
     images = body.get("images") or []
     masks = body.get("mask") or []
